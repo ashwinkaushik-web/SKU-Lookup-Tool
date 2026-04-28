@@ -1,14 +1,16 @@
 """
 SKU Lookup Tool — Streamlit Cloud Version
-Shareable via URL. Each user logs in with their own Snowflake credentials.
+Uses Snowflake key-pair auth via service account. No login needed.
 """
 
 import streamlit as st
 import pandas as pd
 import snowflake.connector
 import datetime
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
 
-st.set_page_config(page_title="SKU Lookup Tool — Pattern", page_icon="⚡", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="SKU Lookup Tool — Pattern", page_icon="⚡", layout="wide")
 
 st.markdown("""
 <style>
@@ -19,16 +21,38 @@ st.markdown("""
     [data-testid="stMetric"] {background:rgba(17,24,39,0.5);border:1px solid rgba(30,41,59,0.5);border-radius:12px;padding:16px 20px;}
     #MainMenu {visibility:hidden;}
     footer {visibility:hidden;}
-    div[data-testid="stSidebar"] {background:rgba(13,17,23,0.95);}
 </style>
 """, unsafe_allow_html=True)
 
-SNOWFLAKE_ACCOUNT = "WEDSQVX-PATTERN"
-SNOWFLAKE_WAREHOUSE = "PC_FIVETRAN_WH"
-SNOWFLAKE_ROLE = "DATA_FANATICS_READ_ROLE"
 
-def get_connection(username, password):
-    return snowflake.connector.connect(account=SNOWFLAKE_ACCOUNT, user=username, password=password, warehouse=SNOWFLAKE_WAREHOUSE, role=SNOWFLAKE_ROLE, database="ANALYTICS_DB", schema="STG_CATALOG")
+@st.cache_resource
+def get_connection():
+    """Create Snowflake connection using key-pair auth from Streamlit Secrets."""
+    sf = st.secrets["snowflake"]
+
+    # Load private key
+    private_key_pem = sf["private_key"].encode("utf-8")
+    private_key = serialization.load_pem_private_key(
+        private_key_pem,
+        password=None,
+        backend=default_backend(),
+    )
+    private_key_bytes = private_key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+    return snowflake.connector.connect(
+        account=sf["account"],
+        user=sf["user"],
+        private_key=private_key_bytes,
+        warehouse=sf["warehouse"],
+        role=sf["role"],
+        database="ANALYTICS_DB",
+        schema="STG_CATALOG",
+    )
+
 
 def build_query(skus):
     def safe(s): return s.strip().replace("'", "''")
@@ -81,39 +105,11 @@ WHERE UPPER(SKU) IN ({upper_list}) OR UPPER(LISTING_ID) IN ({upper_list})
 ORDER BY MARKETPLACE, VENDOR, SKU
 """
 
-def run_lookup(username, password, skus):
-    conn = get_connection(username, password)
-    try: return pd.read_sql(build_query(skus), conn)
-    finally: conn.close()
 
-# ── Sidebar Login ──
-with st.sidebar:
-    st.markdown("### 🔐 Snowflake Login")
-    st.caption("Enter your Snowflake credentials to connect.")
-    sf_user = st.text_input("Email / Username", placeholder="you@pattern.com")
-    sf_pass = st.text_input("Password", type="password", placeholder="Your Snowflake password")
-    if st.button("Connect", type="primary", use_container_width=True):
-        if sf_user and sf_pass:
-            try:
-                test_conn = get_connection(sf_user, sf_pass)
-                test_conn.cursor().execute("SELECT 1")
-                test_conn.close()
-                st.success("✅ Connected!")
-                st.session_state["sf_user"] = sf_user
-                st.session_state["sf_pass"] = sf_pass
-                st.session_state["logged_in"] = True
-            except Exception as e:
-                st.error(f"❌ Failed: {e}")
-                st.session_state["logged_in"] = False
-    if st.session_state.get("logged_in"):
-        st.markdown(f"**Connected as:** `{st.session_state.get('sf_user','')}`")
-    st.markdown("---")
-    st.caption(f"Account: `{SNOWFLAKE_ACCOUNT}`")
-    st.caption(f"Warehouse: `{SNOWFLAKE_WAREHOUSE}`")
-    st.caption(f"Role: `{SNOWFLAKE_ROLE}`")
-    st.caption("DNO Date: Latest available")
-    st.markdown("---")
-    st.caption("Don't have a password? Ask your Snowflake admin to enable password auth for your account.")
+def run_lookup(skus):
+    conn = get_connection()
+    return pd.read_sql(build_query(skus), conn)
+
 
 # ── Header ──
 st.markdown('<div class="main-header"><div class="header-icon">⚡</div><div><p class="header-title">SKU Lookup Tool</p><p class="header-sub">Check DNO, Shippable, Commingled status & more — powered by Snowflake</p></div></div>', unsafe_allow_html=True)
@@ -145,20 +141,18 @@ if skus_to_lookup:
     if len(skus_to_lookup) > 500:
         st.warning("⚠️ Max 500 items. Only first 500 processed.")
         skus_to_lookup = skus_to_lookup[:500]
-    if not st.session_state.get("logged_in"):
-        st.info("👈 Log in with your Snowflake credentials in the sidebar first.")
-    else:
-        if st.button("🔍 Lookup", type="primary", use_container_width=True):
-            with st.spinner("Querying Snowflake..."):
-                try:
-                    df = run_lookup(st.session_state["sf_user"], st.session_state["sf_pass"], skus_to_lookup)
-                    if df.empty:
-                        st.warning("No results found.")
-                        st.session_state["results_df"] = pd.DataFrame()
-                    else:
-                        st.session_state["results_df"] = df
-                        st.session_state["skus_count"] = len(skus_to_lookup)
-                except Exception as e: st.error(f"Query failed: {e}")
+
+    if st.button("🔍 Lookup", type="primary", use_container_width=True):
+        with st.spinner("Querying Snowflake..."):
+            try:
+                df = run_lookup(skus_to_lookup)
+                if df.empty:
+                    st.warning("No results found.")
+                    st.session_state["results_df"] = pd.DataFrame()
+                else:
+                    st.session_state["results_df"] = df
+                    st.session_state["skus_count"] = len(skus_to_lookup)
+            except Exception as e: st.error(f"Query failed: {e}")
 
 # ── Results ──
 if "results_df" in st.session_state and not st.session_state["results_df"].empty:
