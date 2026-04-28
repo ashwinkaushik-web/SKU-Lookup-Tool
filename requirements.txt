@@ -2,3 +2,4 @@ streamlit==1.44.0
 snowflake-connector-python[pandas]
 pandas
 openpyxl
+cryptography
