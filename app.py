@@ -38,11 +38,14 @@ def get_connection():
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
-    return snowflake.connector.connect(
+    conn = snowflake.connector.connect(
         account=sf["account"], user=sf["user"], private_key=private_key_bytes,
         warehouse=sf["warehouse"], role=sf["role"],
         database="ANALYTICS_DB", schema="STG_CATALOG",
     )
+    # Explicitly set warehouse in case default isn't configured
+    conn.cursor().execute(f"USE WAREHOUSE {sf['warehouse']}")
+    return conn
 
 
 def build_query(skus):
@@ -89,10 +92,6 @@ q3 AS (
     FROM PATTERN_DB.PUBLIC.CATALOG_LISTING_STATUS_HISTORY h
     WHERE h."DATE" = (SELECT MAX("DATE") FROM PATTERN_DB.PUBLIC.CATALOG_LISTING_STATUS_HISTORY)
 ),
-q4 AS (
-    SELECT d.LISTING_ID AS listing_id, d.DNO_NOTE AS dno_note
-    FROM ANALYTICS_DB.STG_CATALOG.STG_CATALOG__DNO_SETTINGS d
-),
 base AS (
     SELECT COALESCE(q2.marketplace, q1.marketplace) AS MARKETPLACE,
         COALESCE(q2.vendor, q1.vendor) AS VENDOR,
@@ -114,11 +113,9 @@ base AS (
         q2.wholesale_price AS WHOLESALE_PRICE,
         q2.map_price AS MAP_PRICE,
         q2.retail_price AS RETAIL_PRICE,
-        q2.msrp_price AS MSRP_PRICE,
-        q4.dno_note AS DNO_NOTE
+        q2.msrp_price AS MSRP_PRICE
     FROM q1 FULL OUTER JOIN q2 ON q1.listing_id = q2.listing_id
     LEFT JOIN q3 ON q3.listing_id = COALESCE(q1.listing_id, q2.listing_id)
-    LEFT JOIN q4 ON q4.listing_id = COALESCE(q1.listing_id, q2.listing_id)
 )
 SELECT * FROM base
 WHERE UPPER(SKU) IN ({upper_list}) OR UPPER(LISTING_ID) IN ({upper_list})
@@ -283,7 +280,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
         "LISTING_FULFILLMENT_TYPE", "LISTING_TYPE", "ASIN", "FNSKU", "MASTER_ID", "MPN",
         "COMMINGLED_STATUS", "IS_ACTIVE", "IS_DISCONTINUED", "PRODUCT_NAME",
         "UPC", "EAN", "CAN_EXPIRE", "WHOLESALE_PRICE", "MAP_PRICE", "RETAIL_PRICE",
-        "MSRP_PRICE", "DNO_NOTE",
+        "MSRP_PRICE",
     ]
     display_cols = [c for c in all_display_cols if c in filtered.columns]
 
