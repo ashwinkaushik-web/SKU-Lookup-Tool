@@ -1,5 +1,5 @@
 """
-SKU Lookup Tool — Pattern
+Product Catalogue Lookup — Pattern
 Streamlit Cloud | Key-pair auth | No login needed
 """
 
@@ -10,7 +10,7 @@ import datetime
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 
-st.set_page_config(page_title="SKU Lookup Tool — Pattern", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Product Catalogue Lookup — Pattern", page_icon="📦", layout="wide")
 
 # ══════════════════════════════════════════════
 # CSS
@@ -220,15 +220,23 @@ def find_missing_items(skus, df):
 # Sidebar
 # ══════════════════════════════════════════════
 with st.sidebar:
-    st.markdown("## ⚡ SKU Lookup Tool")
+    st.markdown("## 📦 Product Catalogue Lookup")
     st.caption("Pattern — Merchandise Planning")
 
+    st.markdown('<div class="sidebar-section"><h4>📖 About This Tool</h4><p>'
+                'A one-stop lookup tool for the Merchandise Planning team to quickly check '
+                'listing-level attributes across all marketplaces. Paste any identifier — SKU, '
+                'Listing ID, ASIN, MPN, Master ID, or FNSKU — and instantly retrieve DNO status, '
+                'shippable tags, fulfillment type, commingling details, pricing, and more. '
+                'Powered by live Snowflake queries, the data is always fresh and up to date.</p></div>', unsafe_allow_html=True)
+
     st.markdown('<div class="sidebar-section"><h4>📖 How to Use</h4><p>'
-                '1. Paste SKUs, Listing IDs, ASINs, MPNs, Master IDs, or FNSKUs — one per line<br>'
-                '2. Or upload a CSV/Excel file (first column = identifiers)<br>'
-                '3. Click Lookup to query Snowflake<br>'
-                '4. Use filters to narrow results<br>'
-                '5. Export to CSV when done</p></div>', unsafe_allow_html=True)
+                '1. Paste identifiers one per line, or upload a CSV/Excel file<br>'
+                '2. Click Lookup to query Snowflake<br>'
+                '3. Switch to the Results tab to view data<br>'
+                '4. Use filters to narrow down results<br>'
+                '5. Toggle columns to customise your view<br>'
+                '6. Export to CSV when done</p></div>', unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section"><h4>🔍 Supported Lookups</h4><p>'
                 '• SKU (Marketplace Primary ID)<br>'
@@ -251,9 +259,9 @@ with st.sidebar:
 # ══════════════════════════════════════════════
 # Header
 # ══════════════════════════════════════════════
-st.markdown('<div class="main-header"><div class="header-icon">⚡</div><div>'
-            '<p class="header-title">SKU Lookup Tool</p>'
-            '<p class="header-sub">Check DNO, Shippable, Commingled & more — powered by Snowflake</p>'
+st.markdown('<div class="main-header"><div class="header-icon">📦</div><div>'
+            '<p class="header-title">Product Catalogue Lookup</p>'
+            '<p class="header-sub">Instantly check DNO, Shippable, Commingled, pricing & more across all marketplaces</p>'
             '</div></div>', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
