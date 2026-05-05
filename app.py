@@ -1,6 +1,6 @@
 """
-SKU Lookup Tool — Streamlit Cloud Version
-Uses Snowflake key-pair auth via service account. No login needed.
+SKU Lookup Tool — Pattern
+Streamlit Cloud | Key-pair auth | No login needed
 """
 
 import streamlit as st
@@ -12,38 +12,98 @@ from cryptography.hazmat.backends import default_backend
 
 st.set_page_config(page_title="SKU Lookup Tool — Pattern", page_icon="⚡", layout="wide")
 
+# ══════════════════════════════════════════════
+# CSS
+# ══════════════════════════════════════════════
 st.markdown("""
 <style>
-    .main-header {display:flex;align-items:center;gap:16px;margin-bottom:8px;}
+    .main-header {display:flex;align-items:center;gap:16px;margin-bottom:4px;}
     .header-icon {width:48px;height:48px;background:linear-gradient(135deg,#3b82f6,#6366f1);border-radius:12px;display:grid;place-items:center;font-size:22px;color:#fff;box-shadow:0 0 24px rgba(59,130,246,0.3);flex-shrink:0;}
     .header-title {font-size:28px;font-weight:700;margin:0;}
     .header-sub {font-size:14px;color:#64748b;margin:0;}
-    [data-testid="stMetric"] {background:rgba(17,24,39,0.5);border:1px solid rgba(30,41,59,0.5);border-radius:12px;padding:16px 20px;}
+
+    /* Colored metric cards */
+    .metric-card {border-radius:12px;padding:18px 22px;border:1px solid rgba(255,255,255,0.06);}
+    .metric-card .label {font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;opacity:0.8;}
+    .metric-card .value {font-size:32px;font-weight:700;margin-top:2px;}
+    .mc-total {background:rgba(59,130,246,0.12);color:#60a5fa;}
+    .mc-dno {background:rgba(239,68,68,0.12);color:#f87171;}
+    .mc-ship {background:rgba(34,197,94,0.12);color:#4ade80;}
+    .mc-noship {background:rgba(245,158,11,0.12);color:#fbbf24;}
+    .mc-fba {background:rgba(168,85,247,0.12);color:#c084fc;}
+    .mc-active {background:rgba(6,182,212,0.12);color:#22d3ee;}
+
+    /* Missing items */
+    .missing-item {display:inline-block;background:rgba(239,68,68,0.15);color:#f87171;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:500;margin:2px 4px;}
+
     #MainMenu {visibility:hidden;}
     footer {visibility:hidden;}
+
+    /* Sidebar */
+    div[data-testid="stSidebar"] {background:rgba(13,17,23,0.97);}
+    .sidebar-section {background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:14px;margin-bottom:12px;}
+    .sidebar-section h4 {margin:0 0 8px 0;font-size:14px;}
+    .sidebar-section p {margin:0;font-size:12px;color:#94a3b8;line-height:1.5;}
 </style>
 """, unsafe_allow_html=True)
 
+# ══════════════════════════════════════════════
+# Column config: key → friendly name + settings
+# ══════════════════════════════════════════════
+COLUMN_MAP = {
+    "SKU": {"label": "SKU", "default": True},
+    "LISTING_ID": {"label": "Listing ID", "default": True},
+    "MARKETPLACE": {"label": "Marketplace", "default": True},
+    "VENDOR": {"label": "Vendor", "default": True},
+    "PRODUCT_NAME": {"label": "Product Name", "default": True},
+    "IS_DNO": {"label": "DNO", "default": True},
+    "SHIPPABLE_TAG": {"label": "Shippable", "default": True},
+    "LISTING_FULFILLMENT_TYPE": {"label": "Fulfillment Type", "default": True},
+    "LISTING_TYPE": {"label": "Listing Type", "default": False},
+    "ASIN": {"label": "ASIN", "default": True},
+    "FNSKU": {"label": "FNSKU", "default": False},
+    "MASTER_ID": {"label": "Master ID", "default": False},
+    "MPN": {"label": "MPN", "default": False},
+    "COMMINGLED_STATUS": {"label": "Commingled", "default": False},
+    "IS_ACTIVE": {"label": "Active", "default": True},
+    "IS_DISCONTINUED": {"label": "Discontinued", "default": False},
+    "UPC": {"label": "UPC", "default": False},
+    "EAN": {"label": "EAN", "default": False},
+    "CAN_EXPIRE": {"label": "Can Expire", "default": False},
+    "WHOLESALE_PRICE": {"label": "Wholesale Price", "default": False},
+    "MAP_PRICE": {"label": "MAP Price", "default": False},
+    "RETAIL_PRICE": {"label": "Retail Price", "default": False},
+    "MSRP_PRICE": {"label": "MSRP Price", "default": False},
+    "DNO_NOTE": {"label": "DNO Note", "default": True},
+}
 
+BOOL_COLS = {
+    "IS_DNO": ("⛔ YES — DNO", "✅ NO"),
+    "SHIPPABLE_TAG": ("✅ YES", "⛔ NO"),
+    "IS_ACTIVE": ("✅ YES", "❌ NO"),
+    "IS_DISCONTINUED": ("⛔ YES", "✅ NO"),
+    "CAN_EXPIRE": ("⚠️ YES", "✅ NO"),
+}
+
+
+# ══════════════════════════════════════════════
+# Snowflake connection
+# ══════════════════════════════════════════════
 @st.cache_resource
 def get_connection():
-    """Create Snowflake connection using key-pair auth from Streamlit Secrets."""
     sf = st.secrets["snowflake"]
-    private_key_pem = sf["private_key"].encode("utf-8")
-    private_key = serialization.load_pem_private_key(
-        private_key_pem, password=None, backend=default_backend(),
-    )
-    private_key_bytes = private_key.private_bytes(
+    pk_pem = sf["private_key"].encode("utf-8")
+    pk = serialization.load_pem_private_key(pk_pem, password=None, backend=default_backend())
+    pk_bytes = pk.private_bytes(
         encoding=serialization.Encoding.DER,
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     )
     conn = snowflake.connector.connect(
-        account=sf["account"], user=sf["user"], private_key=private_key_bytes,
+        account=sf["account"], user=sf["user"], private_key=pk_bytes,
         warehouse=sf["warehouse"], role=sf["role"],
         database="ANALYTICS_DB", schema="STG_CATALOG",
     )
-    # Explicitly set warehouse in case default isn't configured
     conn.cursor().execute(f"USE WAREHOUSE {sf['warehouse']}")
     return conn
 
@@ -65,25 +125,23 @@ WITH q1 AS (
             WHEN a.LISTING_MP_SECONDARY_ID = a.LISTING_MP_PAGE_ID AND a.Listing_is_commingled = FALSE THEN 'Amazon set as commingled, but Pattern flag not on'
             WHEN a.LISTING_MP_SECONDARY_ID IS NULL THEN 'Missing FNSKU for analysis'
             ELSE 'Check'
-        END AS commingled_status
+        END AS commingled_status,
+        dno.DNO_NOTE AS dno_note
     FROM ANALYTICS_DB.STG_CATALOG.STG_CATALOG__LISTINGS a
     LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__PRODUCTS b ON b.ID = a.PRODUCT_ID
     LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__MARKETPLACES c ON a.MARKETPLACE_ID = c.ID
     LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__PARTNERS par ON par.ID = b.PARTNER_ID
+    LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__DNO_SETTINGS dno ON dno.ID = a.DNO_SETTING_ID
 ),
 q2 AS (
     SELECT pc.MARKETPLACE_NAME AS marketplace, pc.VENDOR_NAME AS vendor, pc.MARKETPLACE_PRIMARY_ID AS sku,
         pc.FULFILLMENT_TYPE AS listing_fulfillment_type, pc.LISTING_ID AS listing_id,
         pc.LISTING_IS_SHIPABLE AS shippable_tag, pc.LISTING_TYPE AS listing_type,
-        pc.IS_ACTIVE AS is_active,
-        pc.IS_DISCONTINUED AS is_discontinued,
-        pc.PRODUCT_NAME AS product_name,
-        pc.UPC AS upc,
-        pc.EAN AS ean,
+        pc.IS_ACTIVE AS is_active, pc.IS_DISCONTINUED AS is_discontinued,
+        pc.PRODUCT_NAME AS product_name, pc.UPC AS upc, pc.EAN AS ean,
         pc.CAN_EXPIRE AS can_expire,
         pc.FINANCE_APPROVED_WHOLESALE_PRICE_W_CURRENCY AS wholesale_price,
-        pc.MAP_W_CURRENCY AS map_price,
-        pc.RETAIL_W_CURRENCY AS retail_price,
+        pc.MAP_W_CURRENCY AS map_price, pc.RETAIL_W_CURRENCY AS retail_price,
         pc.MSRP_W_CURRENCY AS msrp_price
     FROM PATTERN_DB.PUBLIC.PRODUCT_CATALOG_PRODUCTS_AND_LISTINGS_VIEW pc
 ),
@@ -104,16 +162,11 @@ base AS (
         q2.shippable_tag AS SHIPPABLE_TAG,
         q2.listing_type AS LISTING_TYPE,
         COALESCE(q3.is_dno, FALSE) AS IS_DNO,
-        q2.is_active AS IS_ACTIVE,
-        q2.is_discontinued AS IS_DISCONTINUED,
-        q2.product_name AS PRODUCT_NAME,
-        q2.upc AS UPC,
-        q2.ean AS EAN,
-        q2.can_expire AS CAN_EXPIRE,
-        q2.wholesale_price AS WHOLESALE_PRICE,
-        q2.map_price AS MAP_PRICE,
-        q2.retail_price AS RETAIL_PRICE,
-        q2.msrp_price AS MSRP_PRICE
+        q2.is_active AS IS_ACTIVE, q2.is_discontinued AS IS_DISCONTINUED,
+        q2.product_name AS PRODUCT_NAME, q2.upc AS UPC, q2.ean AS EAN,
+        q2.can_expire AS CAN_EXPIRE, q2.wholesale_price AS WHOLESALE_PRICE,
+        q2.map_price AS MAP_PRICE, q2.retail_price AS RETAIL_PRICE,
+        q2.msrp_price AS MSRP_PRICE, q1.dno_note AS DNO_NOTE
     FROM q1 FULL OUTER JOIN q2 ON q1.listing_id = q2.listing_id
     LEFT JOIN q3 ON q3.listing_id = COALESCE(q1.listing_id, q2.listing_id)
 )
@@ -131,201 +184,279 @@ def run_lookup(skus):
 
 
 def multiselect_filter(df, column, label, key):
-    """Create a multi-select filter for a column. Returns filtered df."""
     unique_vals = sorted(df[column].dropna().unique().tolist())
     if not unique_vals:
         return df
-    selected = st.multiselect(label, options=unique_vals, default=[], key=key,
-                               placeholder="All")
+    selected = st.multiselect(label, options=unique_vals, default=[], key=key, placeholder="All")
     if selected:
         return df[df[column].isin(selected)]
     return df
 
 
 def bool_multiselect_filter(df, column, label, key):
-    """Multi-select filter for boolean columns (YES/NO)."""
-    selected = st.multiselect(label, options=["YES", "NO"], default=[], key=key,
-                               placeholder="All")
+    selected = st.multiselect(label, options=["YES", "NO"], default=[], key=key, placeholder="All")
     if not selected:
         return df
-    conditions = []
+    conds = []
     if "YES" in selected:
-        conditions.append(df[column] == True)
+        conds.append(df[column] == True)
     if "NO" in selected:
-        conditions.append(df[column] != True)
-    if len(conditions) == 1:
-        return df[conditions[0]]
-    return df[conditions[0] | conditions[1]]
+        conds.append(df[column] != True)
+    if len(conds) == 1:
+        return df[conds[0]]
+    return df[conds[0] | conds[1]]
 
 
-# ── Header ──
-st.markdown('<div class="main-header"><div class="header-icon">⚡</div><div><p class="header-title">SKU Lookup Tool</p><p class="header-sub">Check DNO, Shippable, Commingled status & more — powered by Snowflake</p></div></div>', unsafe_allow_html=True)
-st.markdown("")
+def find_missing_items(skus, df):
+    """Find which pasted items returned no results."""
+    found = set()
+    for col in ["SKU", "LISTING_ID", "ASIN", "MPN", "MASTER_ID", "FNSKU"]:
+        if col in df.columns:
+            found.update(df[col].dropna().str.upper().tolist())
+    return [s for s in skus if s.upper() not in found]
 
-# ── Input ──
-tab_paste, tab_upload = st.tabs(["✏️ Paste SKUs", "📁 Upload File"])
-skus_to_lookup = []
 
-with tab_paste:
-    sku_text = st.text_area("Enter SKUs / Listing IDs / ASINs / MPNs / Master IDs / FNSKUs",
-                            placeholder="One item per line", height=180)
-    if sku_text.strip():
-        skus_to_lookup = [s.strip() for s in sku_text.strip().split("\n") if s.strip()]
-    st.caption("One item per line. Max 500 items.")
+# ══════════════════════════════════════════════
+# Sidebar
+# ══════════════════════════════════════════════
+with st.sidebar:
+    st.markdown("## ⚡ SKU Lookup Tool")
+    st.caption("Pattern — Merchandise Planning")
 
-with tab_upload:
-    uploaded_file = st.file_uploader("Upload CSV or Excel (first column = SKUs)", type=["csv", "xlsx", "xls"])
-    if uploaded_file:
-        try:
-            if uploaded_file.name.lower().endswith(".csv"):
-                upload_df = pd.read_csv(uploaded_file, dtype=str)
-            else:
-                upload_df = pd.read_excel(uploaded_file, dtype=str, engine="openpyxl")
-            skus_to_lookup = upload_df.iloc[:, 0].dropna().astype(str).str.strip().tolist()
-            skus_to_lookup = [s for s in skus_to_lookup if s]
-            st.success(f"📎 Loaded {len(skus_to_lookup)} items from `{uploaded_file.name}`")
-        except Exception as e:
-            st.error(f"Failed to read file: {e}")
+    st.markdown('<div class="sidebar-section"><h4>📖 How to Use</h4><p>'
+                '1. Paste SKUs, Listing IDs, ASINs, MPNs, Master IDs, or FNSKUs — one per line<br>'
+                '2. Or upload a CSV/Excel file (first column = identifiers)<br>'
+                '3. Click Lookup to query Snowflake<br>'
+                '4. Use filters to narrow results<br>'
+                '5. Export to CSV when done</p></div>', unsafe_allow_html=True)
 
-# ── Lookup ──
-if skus_to_lookup:
-    if len(skus_to_lookup) > 500:
-        st.warning("⚠️ Max 500 items. Only first 500 processed.")
-        skus_to_lookup = skus_to_lookup[:500]
+    st.markdown('<div class="sidebar-section"><h4>🔍 Supported Lookups</h4><p>'
+                '• SKU (Marketplace Primary ID)<br>'
+                '• Listing ID<br>'
+                '• ASIN<br>'
+                '• MPN<br>'
+                '• Master ID<br>'
+                '• FNSKU</p></div>', unsafe_allow_html=True)
 
-    if st.button("🔍 Lookup", type="primary", use_container_width=True):
-        with st.spinner("Querying Snowflake..."):
-            try:
-                df = run_lookup(skus_to_lookup)
-                if df.empty:
-                    st.warning("No results found.")
-                    st.session_state["results_df"] = pd.DataFrame()
-                else:
-                    st.session_state["results_df"] = df
-                    st.session_state["skus_count"] = len(skus_to_lookup)
-            except Exception as e:
-                st.error(f"Query failed: {e}")
+    st.markdown('<div class="sidebar-section"><h4>ℹ️ Data Info</h4><p>'
+                '• DNO date: Latest available<br>'
+                '• Data source: Snowflake<br>'
+                '• Results are live (not cached)<br>'
+                '• Max 500 items per lookup</p></div>', unsafe_allow_html=True)
 
-# ── Results ──
-if "results_df" in st.session_state and not st.session_state["results_df"].empty:
-    df = st.session_state["results_df"].copy()
-    skus_count = st.session_state.get("skus_count", 0)
-    st.success(f"Found **{len(df)}** result(s) for **{skus_count}** item(s)")
+    st.markdown("---")
+    st.caption(f"v2.0 • {datetime.date.today().strftime('%B %Y')}")
 
-    # Summary metrics
-    dno_count = int((df["IS_DNO"] == True).sum()) if "IS_DNO" in df.columns else 0
-    shippable_count = int((df["SHIPPABLE_TAG"] == True).sum()) if "SHIPPABLE_TAG" in df.columns else 0
-    fba_count = int((df["LISTING_FULFILLMENT_TYPE"].str.upper() == "FBA").sum()) if "LISTING_FULFILLMENT_TYPE" in df.columns else 0
-    active_count = int((df["IS_ACTIVE"] == True).sum()) if "IS_ACTIVE" in df.columns else 0
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Total", len(df))
-    c2.metric("DNO = True", dno_count)
-    c3.metric("Shippable", shippable_count)
-    c4.metric("Not Shippable", len(df) - shippable_count)
-    c5.metric("FBA", fba_count)
-    c6.metric("Active", active_count)
+# ══════════════════════════════════════════════
+# Header
+# ══════════════════════════════════════════════
+st.markdown('<div class="main-header"><div class="header-icon">⚡</div><div>'
+            '<p class="header-title">SKU Lookup Tool</p>'
+            '<p class="header-sub">Check DNO, Shippable, Commingled & more — powered by Snowflake</p>'
+            '</div></div>', unsafe_allow_html=True)
 
-    # ── Filters (multi-select, all columns) ──
-    st.markdown("### 🔽 Filters")
+# ══════════════════════════════════════════════
+# Input + Results in tabs
+# ══════════════════════════════════════════════
+input_tab, results_tab = st.tabs(["🔍 Search", "📊 Results"])
 
-    # Text search
-    search_text = st.text_input("🔍 Search across all fields", placeholder="Type to search...", key="search_all")
+with input_tab:
+    st.markdown("")
+    paste_col, upload_col = st.columns(2)
 
-    # Row 1: Main filters
-    fc1, fc2, fc3, fc4 = st.columns(4)
-    filtered = df.copy()
-    with fc1:
-        filtered = multiselect_filter(filtered, "MARKETPLACE", "Marketplace", "f_mp")
-    with fc2:
-        filtered = multiselect_filter(filtered, "VENDOR", "Vendor", "f_vn")
-    with fc3:
-        filtered = bool_multiselect_filter(filtered, "IS_DNO", "DNO", "f_dno")
-    with fc4:
-        filtered = bool_multiselect_filter(filtered, "SHIPPABLE_TAG", "Shippable", "f_ship")
+    skus_to_lookup = []
 
-    # Row 2: More filters
-    fc5, fc6, fc7, fc8 = st.columns(4)
-    with fc5:
-        filtered = multiselect_filter(filtered, "LISTING_FULFILLMENT_TYPE", "Fulfillment Type", "f_ff")
-    with fc6:
-        filtered = multiselect_filter(filtered, "LISTING_TYPE", "Listing Type", "f_lt")
-    with fc7:
-        filtered = multiselect_filter(filtered, "COMMINGLED_STATUS", "Commingled", "f_cm")
-    with fc8:
-        if "IS_ACTIVE" in filtered.columns:
-            filtered = bool_multiselect_filter(filtered, "IS_ACTIVE", "Active", "f_active")
-
-    # Row 3: Additional filters
-    fc9, fc10, fc11, fc12 = st.columns(4)
-    with fc9:
-        if "IS_DISCONTINUED" in filtered.columns:
-            filtered = bool_multiselect_filter(filtered, "IS_DISCONTINUED", "Discontinued", "f_disc")
-    with fc10:
-        if "CAN_EXPIRE" in filtered.columns:
-            filtered = bool_multiselect_filter(filtered, "CAN_EXPIRE", "Can Expire", "f_expire")
-
-    # Apply text search
-    if search_text.strip():
-        mask = filtered.astype(str).apply(
-            lambda row: row.str.contains(search_text.strip(), case=False).any(), axis=1
+    with paste_col:
+        st.markdown("#### ✏️ Paste Items")
+        sku_text = st.text_area(
+            "Enter SKUs / Listing IDs / ASINs / MPNs / Master IDs / FNSKUs",
+            placeholder="One item per line, e.g.\nUK-BOSCH-786700-COM\nL0NC2POW\nB0BXT6YCHK",
+            height=220, label_visibility="collapsed",
         )
-        filtered = filtered[mask]
+        if sku_text.strip():
+            skus_to_lookup = [s.strip() for s in sku_text.strip().split("\n") if s.strip()]
+        st.caption(f"{len(skus_to_lookup)} item(s) entered • Max 500")
 
-    st.caption(f"Showing **{len(filtered)}** of **{len(df)}** results")
+    with upload_col:
+        st.markdown("#### 📁 Upload File")
+        uploaded_file = st.file_uploader(
+            "CSV or Excel (first column = SKUs)",
+            type=["csv", "xlsx", "xls"],
+            label_visibility="collapsed",
+        )
+        if uploaded_file:
+            try:
+                if uploaded_file.name.lower().endswith(".csv"):
+                    upload_df = pd.read_csv(uploaded_file, dtype=str)
+                else:
+                    upload_df = pd.read_excel(uploaded_file, dtype=str, engine="openpyxl")
+                skus_to_lookup = upload_df.iloc[:, 0].dropna().astype(str).str.strip().tolist()
+                skus_to_lookup = [s for s in skus_to_lookup if s]
+                st.success(f"📎 Loaded **{len(skus_to_lookup)}** items from `{uploaded_file.name}`")
+            except Exception as e:
+                st.error(f"Failed to read file: {e}")
 
-    # ── Column visibility ──
-    all_display_cols = [
-        "SKU", "LISTING_ID", "MARKETPLACE", "VENDOR", "IS_DNO", "SHIPPABLE_TAG",
-        "LISTING_FULFILLMENT_TYPE", "LISTING_TYPE", "ASIN", "FNSKU", "MASTER_ID", "MPN",
-        "COMMINGLED_STATUS", "IS_ACTIVE", "IS_DISCONTINUED", "PRODUCT_NAME",
-        "UPC", "EAN", "CAN_EXPIRE", "WHOLESALE_PRICE", "MAP_PRICE", "RETAIL_PRICE",
-        "MSRP_PRICE",
-    ]
-    display_cols = [c for c in all_display_cols if c in filtered.columns]
+    if skus_to_lookup:
+        if len(skus_to_lookup) > 500:
+            st.warning("⚠️ Max 500 items. Only first 500 processed.")
+            skus_to_lookup = skus_to_lookup[:500]
 
-    with st.expander("👁 Toggle Columns"):
-        selected_cols = st.multiselect("Choose columns to display", options=display_cols,
-                                        default=display_cols, key="col_select")
-    if not selected_cols:
-        selected_cols = display_cols
+        if st.button("🔍 Lookup", type="primary", use_container_width=True):
+            with st.spinner("Querying Snowflake..."):
+                try:
+                    df = run_lookup(skus_to_lookup)
+                    if df.empty:
+                        st.warning("No results found.")
+                        st.session_state["results_df"] = pd.DataFrame()
+                    else:
+                        st.session_state["results_df"] = df
+                        st.session_state["skus_count"] = len(skus_to_lookup)
+                        st.session_state["skus_list"] = skus_to_lookup
+                        st.success(f"✅ Found **{len(df)}** results! Switch to the **Results** tab to view.")
+                except Exception as e:
+                    st.error(f"Query failed: {e}")
 
-    # ── Format for display ──
-    display_df = filtered[selected_cols].copy()
-    bool_cols_format = {
-        "IS_DNO": ("⛔ YES — DNO", "✅ NO"),
-        "SHIPPABLE_TAG": ("✅ YES", "⛔ NO"),
-        "IS_ACTIVE": ("✅ YES", "❌ NO"),
-        "IS_DISCONTINUED": ("⛔ YES", "✅ NO"),
-        "CAN_EXPIRE": ("⚠️ YES", "✅ NO"),
-    }
-    for col, (true_label, false_label) in bool_cols_format.items():
-        if col in display_df.columns:
-            display_df[col] = display_df[col].apply(
-                lambda x: true_label if x == True else false_label
+with results_tab:
+    if "results_df" not in st.session_state or st.session_state.get("results_df", pd.DataFrame()).empty:
+        st.info("👈 Enter items in the **Search** tab and click **Lookup** to see results here.")
+    else:
+        df = st.session_state["results_df"].copy()
+        skus_count = st.session_state.get("skus_count", 0)
+        skus_list = st.session_state.get("skus_list", [])
+
+        # ── Missing items ──
+        missing = find_missing_items(skus_list, df)
+        if missing:
+            with st.expander(f"⚠️ {len(missing)} item(s) returned no results — click to see", expanded=False):
+                missing_html = "".join(f'<span class="missing-item">{m}</span>' for m in missing)
+                st.markdown(missing_html, unsafe_allow_html=True)
+                st.caption("These items were not found in any lookup field (SKU, Listing ID, ASIN, MPN, Master ID, FNSKU).")
+
+        # ── Colored summary cards ──
+        dno_count = int((df["IS_DNO"] == True).sum()) if "IS_DNO" in df.columns else 0
+        shippable_count = int((df["SHIPPABLE_TAG"] == True).sum()) if "SHIPPABLE_TAG" in df.columns else 0
+        fba_count = int((df["LISTING_FULFILLMENT_TYPE"].str.upper() == "FBA").sum()) if "LISTING_FULFILLMENT_TYPE" in df.columns else 0
+        active_count = int((df["IS_ACTIVE"] == True).sum()) if "IS_ACTIVE" in df.columns else 0
+
+        mc1, mc2, mc3, mc4, mc5, mc6 = st.columns(6)
+        with mc1:
+            st.markdown(f'<div class="metric-card mc-total"><div class="label">Total</div><div class="value">{len(df)}</div></div>', unsafe_allow_html=True)
+        with mc2:
+            st.markdown(f'<div class="metric-card mc-dno"><div class="label">DNO = True</div><div class="value">{dno_count}</div></div>', unsafe_allow_html=True)
+        with mc3:
+            st.markdown(f'<div class="metric-card mc-ship"><div class="label">Shippable</div><div class="value">{shippable_count}</div></div>', unsafe_allow_html=True)
+        with mc4:
+            st.markdown(f'<div class="metric-card mc-noship"><div class="label">Not Shippable</div><div class="value">{len(df) - shippable_count}</div></div>', unsafe_allow_html=True)
+        with mc5:
+            st.markdown(f'<div class="metric-card mc-fba"><div class="label">FBA</div><div class="value">{fba_count}</div></div>', unsafe_allow_html=True)
+        with mc6:
+            st.markdown(f'<div class="metric-card mc-active"><div class="label">Active</div><div class="value">{active_count}</div></div>', unsafe_allow_html=True)
+
+        st.markdown("")
+
+        # ── Filters ──
+        st.markdown("### 🔽 Filters")
+        search_text = st.text_input("🔍 Search across all fields", placeholder="Type to search...", key="search_all")
+
+        r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+        filtered = df.copy()
+        with r1c1:
+            filtered = multiselect_filter(filtered, "MARKETPLACE", "Marketplace", "f_mp")
+        with r1c2:
+            filtered = multiselect_filter(filtered, "VENDOR", "Vendor", "f_vn")
+        with r1c3:
+            filtered = bool_multiselect_filter(filtered, "IS_DNO", "DNO", "f_dno")
+        with r1c4:
+            filtered = bool_multiselect_filter(filtered, "SHIPPABLE_TAG", "Shippable", "f_ship")
+
+        r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+        with r2c1:
+            filtered = multiselect_filter(filtered, "LISTING_FULFILLMENT_TYPE", "Fulfillment Type", "f_ff")
+        with r2c2:
+            filtered = multiselect_filter(filtered, "LISTING_TYPE", "Listing Type", "f_lt")
+        with r2c3:
+            filtered = multiselect_filter(filtered, "COMMINGLED_STATUS", "Commingled", "f_cm")
+        with r2c4:
+            if "IS_ACTIVE" in filtered.columns:
+                filtered = bool_multiselect_filter(filtered, "IS_ACTIVE", "Active", "f_active")
+
+        r3c1, r3c2, r3c3, r3c4 = st.columns(4)
+        with r3c1:
+            if "IS_DISCONTINUED" in filtered.columns:
+                filtered = bool_multiselect_filter(filtered, "IS_DISCONTINUED", "Discontinued", "f_disc")
+        with r3c2:
+            if "CAN_EXPIRE" in filtered.columns:
+                filtered = bool_multiselect_filter(filtered, "CAN_EXPIRE", "Can Expire", "f_expire")
+
+        if search_text.strip():
+            mask = filtered.astype(str).apply(
+                lambda row: row.str.contains(search_text.strip(), case=False).any(), axis=1
             )
+            filtered = filtered[mask]
 
-    # Color coding
-    def color_rows(row):
-        if "IS_DNO" in row.index and "⛔ YES — DNO" in str(row.get("IS_DNO", "")):
-            return ["background-color: rgba(239,68,68,0.08)"] * len(row)
-        elif "SHIPPABLE_TAG" in row.index and "✅ YES" in str(row.get("SHIPPABLE_TAG", "")):
-            return ["background-color: rgba(34,197,94,0.05)"] * len(row)
-        return [""] * len(row)
+        st.caption(f"Showing **{len(filtered)}** of **{len(df)}** results")
 
-    st.dataframe(
-        display_df.style.apply(color_rows, axis=1),
-        use_container_width=True, hide_index=True,
-        height=min(len(display_df) * 38 + 40, 600),
-    )
+        # ── Column visibility with friendly names ──
+        available_cols = [k for k in COLUMN_MAP if k in filtered.columns]
+        default_cols = [k for k in available_cols if COLUMN_MAP[k]["default"]]
+        friendly_options = {COLUMN_MAP[k]["label"]: k for k in available_cols}
 
-    # ── Export ──
-    col_ex1, col_ex2 = st.columns(2)
-    with col_ex1:
-        st.download_button("⬇️ Export All CSV", df[display_cols].to_csv(index=False),
-                           f"sku_lookup_all_{datetime.date.today().isoformat()}.csv",
-                           "text/csv", use_container_width=True)
-    with col_ex2:
-        st.download_button("⬇️ Export Filtered CSV", filtered[display_cols].to_csv(index=False),
-                           f"sku_lookup_filtered_{datetime.date.today().isoformat()}.csv",
-                           "text/csv", use_container_width=True)
+        with st.expander("👁 Toggle Columns"):
+            selected_friendly = st.multiselect(
+                "Choose columns to display",
+                options=[COLUMN_MAP[k]["label"] for k in available_cols],
+                default=[COLUMN_MAP[k]["label"] for k in default_cols],
+                key="col_select",
+            )
+        selected_cols = [friendly_options[f] for f in selected_friendly] if selected_friendly else default_cols
+
+        # ── Format display ──
+        display_df = filtered[selected_cols].copy()
+
+        # Rename to friendly names
+        rename_map = {k: COLUMN_MAP[k]["label"] for k in selected_cols if k in COLUMN_MAP}
+        display_df = display_df.rename(columns=rename_map)
+
+        # Format booleans
+        for col_key, (true_label, false_label) in BOOL_COLS.items():
+            friendly_name = COLUMN_MAP.get(col_key, {}).get("label", col_key)
+            if friendly_name in display_df.columns:
+                display_df[friendly_name] = display_df[friendly_name].apply(
+                    lambda x: true_label if x == True else false_label
+                )
+
+        # Color coding
+        dno_friendly = COLUMN_MAP.get("IS_DNO", {}).get("label", "DNO")
+        ship_friendly = COLUMN_MAP.get("SHIPPABLE_TAG", {}).get("label", "Shippable")
+
+        def color_rows(row):
+            if dno_friendly in row.index and "⛔ YES — DNO" in str(row.get(dno_friendly, "")):
+                return ["background-color: rgba(239,68,68,0.08)"] * len(row)
+            elif ship_friendly in row.index and "✅ YES" in str(row.get(ship_friendly, "")):
+                return ["background-color: rgba(34,197,94,0.05)"] * len(row)
+            return [""] * len(row)
+
+        st.dataframe(
+            display_df.style.apply(color_rows, axis=1),
+            use_container_width=True, hide_index=True,
+            height=min(len(display_df) * 38 + 40, 600),
+        )
+
+        # ── Export ──
+        ex1, ex2 = st.columns(2)
+        export_cols = selected_cols
+        with ex1:
+            st.download_button(
+                "⬇️ Export All CSV",
+                df[export_cols].rename(columns=rename_map).to_csv(index=False),
+                f"sku_lookup_all_{datetime.date.today().isoformat()}.csv",
+                "text/csv", use_container_width=True,
+            )
+        with ex2:
+            st.download_button(
+                "⬇️ Export Filtered CSV",
+                filtered[export_cols].rename(columns=rename_map).to_csv(index=False),
+                f"sku_lookup_filtered_{datetime.date.today().isoformat()}.csv",
+                "text/csv", use_container_width=True,
+            )
