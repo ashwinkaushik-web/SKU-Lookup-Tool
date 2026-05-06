@@ -8,6 +8,7 @@ import pandas as pd
 import snowflake.connector
 import datetime
 import time
+import io
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 
@@ -519,19 +520,53 @@ with results_tab:
             height=min(len(display_df) * 38 + 40, 600),
         )
 
-        # ── Export ──
-        ex1, ex2 = st.columns(2)
+        # ── Export & Copy ──
+        st.markdown("### 📤 Export & Copy")
+
+        ex1, ex2, ex3, ex4 = st.columns(4)
+
+        # CSV exports
         with ex1:
             st.download_button(
-                "⬇️ Export All CSV",
+                "⬇️ All — CSV",
                 df[selected_cols].rename(columns=rename_map).to_csv(index=False),
                 f"catalogue_lookup_all_{datetime.date.today().isoformat()}.csv",
                 "text/csv", use_container_width=True,
             )
         with ex2:
             st.download_button(
-                "⬇️ Export Filtered CSV",
+                "⬇️ Filtered — CSV",
                 filtered[selected_cols].rename(columns=rename_map).to_csv(index=False),
                 f"catalogue_lookup_filtered_{datetime.date.today().isoformat()}.csv",
                 "text/csv", use_container_width=True,
             )
+
+        # Excel exports
+        with ex3:
+            buffer_all = io.BytesIO()
+            df[selected_cols].rename(columns=rename_map).to_excel(buffer_all, index=False, engine="openpyxl")
+            st.download_button(
+                "⬇️ All — Excel",
+                buffer_all.getvalue(),
+                f"catalogue_lookup_all_{datetime.date.today().isoformat()}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        with ex4:
+            buffer_filt = io.BytesIO()
+            filtered[selected_cols].rename(columns=rename_map).to_excel(buffer_filt, index=False, engine="openpyxl")
+            st.download_button(
+                "⬇️ Filtered — Excel",
+                buffer_filt.getvalue(),
+                f"catalogue_lookup_filtered_{datetime.date.today().isoformat()}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
+        # Copy to clipboard (tab-separated for pasting into Excel/Sheets)
+        st.markdown("")
+        with st.expander("📋 Copy to Clipboard — paste directly into Excel or Google Sheets"):
+            copy_df = filtered[selected_cols].rename(columns=rename_map)
+            tsv_text = copy_df.to_csv(index=False, sep="\t")
+            st.code(tsv_text, language=None)
+            st.caption("Select all the text above (Ctrl+A), copy (Ctrl+C), and paste into Excel or Google Sheets. It will auto-format into columns.")
