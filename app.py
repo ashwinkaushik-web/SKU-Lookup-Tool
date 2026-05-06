@@ -84,6 +84,7 @@ COLUMN_MAP = {
     "RETAIL_PRICE": {"label": "Retail Price", "default": False},
     "MSRP_PRICE": {"label": "MSRP Price", "default": False},
     "DNO_NOTE": {"label": "DNO Note", "default": True},
+    "DNO_REASON_CODE": {"label": "DNO Reason Code", "default": True},
 }
 
 BOOL_COLS = {
@@ -143,12 +144,14 @@ WITH q1 AS (
             WHEN a.LISTING_MP_SECONDARY_ID IS NULL THEN 'Missing FNSKU for analysis'
             ELSE 'Check'
         END AS commingled_status,
-        dno.DNO_NOTE AS dno_note
+        dno.DNO_NOTE AS dno_note,
+        dno_rc.DNO_REASON_CODE AS dno_reason_code
     FROM ANALYTICS_DB.STG_CATALOG.STG_CATALOG__LISTINGS a
     LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__PRODUCTS b ON b.ID = a.PRODUCT_ID
     LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__MARKETPLACES c ON a.MARKETPLACE_ID = c.ID
     LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__PARTNERS par ON par.ID = b.PARTNER_ID
     LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__DNO_SETTINGS dno ON dno.ID = a.DNO_SETTING_ID
+    LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__DNO_REASON_CODES dno_rc ON dno_rc.ID = dno.DNO_REASON_CODE_ID
 ),
 q2 AS (
     SELECT pc.MARKETPLACE_NAME AS marketplace, pc.VENDOR_NAME AS vendor, pc.MARKETPLACE_PRIMARY_ID AS sku,
@@ -183,7 +186,8 @@ base AS (
         q2.product_name AS PRODUCT_NAME, q2.upc AS UPC, q2.ean AS EAN,
         q2.can_expire AS CAN_EXPIRE, q2.wholesale_price AS WHOLESALE_PRICE,
         q2.map_price AS MAP_PRICE, q2.retail_price AS RETAIL_PRICE,
-        q2.msrp_price AS MSRP_PRICE, q1.dno_note AS DNO_NOTE
+        q2.msrp_price AS MSRP_PRICE, q1.dno_note AS DNO_NOTE,
+        q1.dno_reason_code AS DNO_REASON_CODE
     FROM q1 FULL OUTER JOIN q2 ON q1.listing_id = q2.listing_id
     LEFT JOIN q3 ON q3.listing_id = COALESCE(q1.listing_id, q2.listing_id)
 )
@@ -434,6 +438,9 @@ with results_tab:
         with r3c2:
             if "CAN_EXPIRE" in filtered.columns:
                 filtered = bool_multiselect_filter(filtered, "CAN_EXPIRE", "Can Expire", "f_expire")
+        with r3c3:
+            if "DNO_REASON_CODE" in filtered.columns:
+                filtered = multiselect_filter(filtered, "DNO_REASON_CODE", "DNO Reason Code", "f_dno_rc")
 
         if search_text.strip():
             mask = filtered.astype(str).apply(
