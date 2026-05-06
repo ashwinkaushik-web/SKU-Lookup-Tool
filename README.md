@@ -1,4 +1,4 @@
-# SKU Lookup Tool — Pattern
+# PC Lookup — Pattern
 
 A Streamlit web app to check **DNO status**, **Shippable tag**, **Commingled status**, and other product attributes by querying Snowflake.
 
