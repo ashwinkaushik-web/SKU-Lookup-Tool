@@ -417,29 +417,61 @@ with results_tab:
         st.markdown("### 🔽 Filters")
         search_text = st.text_input("🔍 Search across all fields", placeholder="Type to search...", key="search_all")
 
-        r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+        # Region mapping
+        REGION_MAP = {
+            "UK": [
+                "Amazon.co.uk", "TikTok UK", "Ebay UK", "Tesco",
+            ],
+            "EU": [
+                "Amazon.de", "Amazon.fr", "Amazon.es", "Amazon.it", "Amazon.nl",
+                "Amazon.pl", "Amazon.se", "Amazon.com.be", "Amazon.ie", "Amazon.com.tr",
+                "Amazon.ae", "Amazon.sa", "Noon",
+                "Bol.com", "Bol.com (BE)",
+                "Cdiscount", "Ebay DE", "Ebay EU",
+                "MediaMarkt", "Otto", "EU DTC", "EU Amazon", "Allegro",
+                "Zalando DE", "Zalando ES", "Zalando FR", "Zalando AT", "Zalando IT",
+                "Zalando CH", "Zalando BE", "Zalando NL", "Zalando PL", "Zalando SE",
+                "Zalando DK", "Zalando FI", "Zalando LU",
+            ],
+        }
+
+        # Region filter row
+        reg_col, mp_col, vn_col, dno_col = st.columns(4)
         filtered = df.copy()
-        with r1c1: filtered = multiselect_filter(filtered, "MARKETPLACE", "Marketplace", "f_mp")
-        with r1c2: filtered = multiselect_filter(filtered, "VENDOR", "Vendor", "f_vn")
-        with r1c3: filtered = bool_multiselect_filter(filtered, "IS_DNO", "DNO", "f_dno")
-        with r1c4: filtered = bool_multiselect_filter(filtered, "SHIPPABLE_TAG", "Shippable", "f_ship")
+
+        with reg_col:
+            sel_region = st.selectbox("🌍 Region", ["All", "UK", "EU"], key="f_region")
+            if sel_region != "All":
+                region_mps = REGION_MAP.get(sel_region, [])
+                filtered = filtered[filtered["MARKETPLACE"].isin(region_mps)]
+
+        with mp_col:
+            # Marketplace filter shows only marketplaces available after region filter
+            mp_vals = sorted(filtered["MARKETPLACE"].dropna().unique().tolist())
+            sel_mps = st.multiselect("Marketplace", options=mp_vals, default=[], key="f_mp", placeholder="All")
+            if sel_mps:
+                filtered = filtered[filtered["MARKETPLACE"].isin(sel_mps)]
+
+        with vn_col: filtered = multiselect_filter(filtered, "VENDOR", "Vendor", "f_vn")
+        with dno_col: filtered = bool_multiselect_filter(filtered, "IS_DNO", "DNO", "f_dno")
+
+        r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+        with r1c1: filtered = bool_multiselect_filter(filtered, "SHIPPABLE_TAG", "Shippable", "f_ship")
+        with r1c2: filtered = multiselect_filter(filtered, "LISTING_FULFILLMENT_TYPE", "Fulfillment Type", "f_ff")
+        with r1c3: filtered = multiselect_filter(filtered, "LISTING_TYPE", "Listing Type", "f_lt")
+        with r1c4: filtered = multiselect_filter(filtered, "COMMINGLED_STATUS", "Commingled", "f_cm")
 
         r2c1, r2c2, r2c3, r2c4 = st.columns(4)
-        with r2c1: filtered = multiselect_filter(filtered, "LISTING_FULFILLMENT_TYPE", "Fulfillment Type", "f_ff")
-        with r2c2: filtered = multiselect_filter(filtered, "LISTING_TYPE", "Listing Type", "f_lt")
-        with r2c3: filtered = multiselect_filter(filtered, "COMMINGLED_STATUS", "Commingled", "f_cm")
-        with r2c4:
+        with r2c1:
             if "IS_ACTIVE" in filtered.columns:
                 filtered = bool_multiselect_filter(filtered, "IS_ACTIVE", "Active", "f_active")
-
-        r3c1, r3c2, r3c3, r3c4 = st.columns(4)
-        with r3c1:
+        with r2c2:
             if "IS_DISCONTINUED" in filtered.columns:
                 filtered = bool_multiselect_filter(filtered, "IS_DISCONTINUED", "Discontinued", "f_disc")
-        with r3c2:
+        with r2c3:
             if "CAN_EXPIRE" in filtered.columns:
                 filtered = bool_multiselect_filter(filtered, "CAN_EXPIRE", "Can Expire", "f_expire")
-        with r3c3:
+        with r2c4:
             if "DNO_REASON_CODE" in filtered.columns:
                 filtered = multiselect_filter(filtered, "DNO_REASON_CODE", "DNO Reason Code", "f_dno_rc")
 
