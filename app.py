@@ -209,8 +209,7 @@ def build_brand_query(vendor, region_marketplaces=None, limit=None):
     """Build query to fetch all listings for a brand/vendor, optionally filtered by region."""
     mp_filter = ""
     if region_marketplaces:
-        mp_list = ", ".join(f"'{mp}'" for mp in region_marketplaces)
-        mp_filter = f"AND (UPPER(COALESCE(q2.marketplace, q1.marketplace)) IN ({', '.join(f'UPPER({chr(39)}{mp}{chr(39)})' for mp in region_marketplaces)}))"
+        mp_filter = "AND UPPER(MARKETPLACE) IN (" + ", ".join(f"UPPER('{mp}')" for mp in region_marketplaces) + ")"
 
     limit_clause = f"LIMIT {limit}" if limit else ""
 
