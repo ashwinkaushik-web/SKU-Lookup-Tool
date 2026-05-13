@@ -706,11 +706,21 @@ with results_tab:
                 return ["background-color: rgba(34,197,94,0.05)"] * n  # Green
             return [""] * n
 
-        st.dataframe(
-            display_df.style.apply(color_rows, axis=1),
-            use_container_width=True, hide_index=True,
-            height=min(len(display_df) * 38 + 40, 600),
-        )
+        # Skip row coloring for large datasets (Styler has a row limit ~262k cells)
+        STYLE_LIMIT = 5000
+        if len(display_df) > STYLE_LIMIT:
+            st.info(f"📊 Showing {len(display_df):,} rows — row coloring is disabled for large datasets to keep the app responsive. Use filters to narrow results if you want colored rows.")
+            st.dataframe(
+                display_df,
+                use_container_width=True, hide_index=True,
+                height=600,
+            )
+        else:
+            st.dataframe(
+                display_df.style.apply(color_rows, axis=1),
+                use_container_width=True, hide_index=True,
+                height=min(len(display_df) * 38 + 40, 600),
+            )
 
         # ── Export & Copy ──
         st.markdown("### 📤 Export & Copy")
