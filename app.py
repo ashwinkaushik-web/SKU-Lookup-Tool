@@ -205,6 +205,97 @@ def run_lookup(skus):
     return pd.read_sql(build_query(skus), conn)
 
 
+def build_brand_query(vendor, region_marketplaces=None, limit=None):
+    """Build query to fetch all listings for a brand/vendor, optionally filtered by region."""
+    mp_filter = ""
+    if region_marketplaces:
+        mp_list = ", ".join(f"'{mp}'" for mp in region_marketplaces)
+        mp_filter = f"AND (UPPER(COALESCE(q2.marketplace, q1.marketplace)) IN ({', '.join(f'UPPER({chr(39)}{mp}{chr(39)})' for mp in region_marketplaces)}))"
+
+    limit_clause = f"LIMIT {limit}" if limit else ""
+
+    return f"""
+WITH q1 AS (
+    SELECT c.name AS marketplace, par.name AS vendor, a.Listing_MP_Primary_ID AS sku,
+        a.LISTING_FULFILLMENT_TYPE AS listing_fulfillment_type, a.LISTING_ID AS listing_id,
+        b.MASTER_ID AS master_id, b.MPN AS mpn, a.LISTING_MP_PAGE_ID AS asin,
+        a.LISTING_MP_SECONDARY_ID AS fnsku,
+        CASE
+            WHEN a.LISTING_FULFILLMENT_TYPE <> 'FBA' THEN NULL
+            WHEN a.LISTING_MP_SECONDARY_ID = a.LISTING_MP_PAGE_ID AND a.Listing_is_commingled = TRUE THEN 'Commingled'
+            WHEN a.LISTING_MP_SECONDARY_ID <> a.LISTING_MP_PAGE_ID AND a.Listing_is_commingled = FALSE THEN 'NOT Commingled'
+            WHEN a.LISTING_MP_SECONDARY_ID <> a.LISTING_MP_PAGE_ID AND a.Listing_is_commingled = TRUE THEN 'Amazon not set to commingled, but Pattern flagged'
+            WHEN a.LISTING_MP_SECONDARY_ID = a.LISTING_MP_PAGE_ID AND a.Listing_is_commingled = FALSE THEN 'Amazon set as commingled, but Pattern flag not on'
+            WHEN a.LISTING_MP_SECONDARY_ID IS NULL THEN 'Missing FNSKU for analysis'
+            ELSE 'Check'
+        END AS commingled_status,
+        dno.DNO_NOTE AS dno_note,
+        dno_rc.DNO_REASON_CODE AS dno_reason_code
+    FROM ANALYTICS_DB.STG_CATALOG.STG_CATALOG__LISTINGS a
+    LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__PRODUCTS b ON b.ID = a.PRODUCT_ID
+    LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__MARKETPLACES c ON a.MARKETPLACE_ID = c.ID
+    LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__PARTNERS par ON par.ID = b.PARTNER_ID
+    LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__DNO_SETTINGS dno ON dno.ID = a.DNO_SETTING_ID
+    LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__DNO_REASON_CODES dno_rc ON dno_rc.ID = dno.DNO_REASON_CODE_ID
+),
+q2 AS (
+    SELECT pc.MARKETPLACE_NAME AS marketplace, pc.VENDOR_NAME AS vendor, pc.MARKETPLACE_PRIMARY_ID AS sku,
+        pc.FULFILLMENT_TYPE AS listing_fulfillment_type, pc.LISTING_ID AS listing_id,
+        pc.LISTING_IS_SHIPABLE AS shippable_tag, pc.LISTING_TYPE AS listing_type,
+        pc.IS_ACTIVE AS is_active, pc.IS_DISCONTINUED AS is_discontinued,
+        pc.PRODUCT_NAME AS product_name, pc.UPC AS upc, pc.EAN AS ean,
+        pc.CAN_EXPIRE AS can_expire,
+        pc.FINANCE_APPROVED_WHOLESALE_PRICE_W_CURRENCY AS wholesale_price,
+        pc.MAP_W_CURRENCY AS map_price, pc.RETAIL_W_CURRENCY AS retail_price,
+        pc.MSRP_W_CURRENCY AS msrp_price
+    FROM PATTERN_DB.PUBLIC.PRODUCT_CATALOG_PRODUCTS_AND_LISTINGS_VIEW pc
+),
+q3 AS (
+    SELECT h.LISTING_ID AS listing_id, h.IS_DNO AS is_dno
+    FROM PATTERN_DB.PUBLIC.CATALOG_LISTING_STATUS_HISTORY h
+    WHERE h."DATE" = (SELECT MAX("DATE") FROM PATTERN_DB.PUBLIC.CATALOG_LISTING_STATUS_HISTORY)
+),
+base AS (
+    SELECT COALESCE(q2.marketplace, q1.marketplace) AS MARKETPLACE,
+        COALESCE(q2.vendor, q1.vendor) AS VENDOR,
+        COALESCE(q2.sku, q1.sku) AS SKU,
+        COALESCE(q2.listing_fulfillment_type, q1.listing_fulfillment_type) AS LISTING_FULFILLMENT_TYPE,
+        COALESCE(q2.listing_id, q1.listing_id) AS LISTING_ID,
+        q1.master_id AS MASTER_ID, q1.mpn AS MPN,
+        q1.asin AS ASIN, q1.fnsku AS FNSKU,
+        q1.commingled_status AS COMMINGLED_STATUS,
+        q2.shippable_tag AS SHIPPABLE_TAG,
+        q2.listing_type AS LISTING_TYPE,
+        COALESCE(q3.is_dno, FALSE) AS IS_DNO,
+        q2.is_active AS IS_ACTIVE, q2.is_discontinued AS IS_DISCONTINUED,
+        q2.product_name AS PRODUCT_NAME, q2.upc AS UPC, q2.ean AS EAN,
+        q2.can_expire AS CAN_EXPIRE, q2.wholesale_price AS WHOLESALE_PRICE,
+        q2.map_price AS MAP_PRICE, q2.retail_price AS RETAIL_PRICE,
+        q2.msrp_price AS MSRP_PRICE, q1.dno_note AS DNO_NOTE,
+        q1.dno_reason_code AS DNO_REASON_CODE
+    FROM q1 FULL OUTER JOIN q2 ON q1.listing_id = q2.listing_id
+    LEFT JOIN q3 ON q3.listing_id = COALESCE(q1.listing_id, q2.listing_id)
+)
+SELECT * FROM base
+WHERE UPPER(VENDOR) = UPPER('{vendor.replace(chr(39), chr(39)+chr(39))}')
+{mp_filter}
+ORDER BY MARKETPLACE, SKU
+{limit_clause}
+"""
+
+
+def run_brand_lookup(vendor, region_marketplaces=None, limit=None):
+    conn = get_connection()
+    return pd.read_sql(build_brand_query(vendor, region_marketplaces, limit), conn)
+
+
+def get_vendor_list():
+    """Fetch distinct vendor names for the brand dropdown."""
+    conn = get_connection()
+    df = pd.read_sql("SELECT DISTINCT par.name AS VENDOR FROM ANALYTICS_DB.STG_CATALOG.STG_CATALOG__PARTNERS par WHERE par.name IS NOT NULL ORDER BY 1", conn)
+    return df["VENDOR"].tolist()
+
+
 def multiselect_filter(df, column, label, key):
     unique_vals = sorted(df[column].dropna().unique().tolist())
     if not unique_vals:
@@ -310,9 +401,29 @@ st.markdown('<div class="main-header"><div class="header-icon">📦</div><div>'
             '</div></div>', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════
+# Region mapping
+# ══════════════════════════════════════════════
+REGION_MAP = {
+    "UK": [
+        "Amazon.co.uk", "TikTok UK", "Ebay UK", "Tesco",
+    ],
+    "EU": [
+        "Amazon.de", "Amazon.fr", "Amazon.es", "Amazon.it", "Amazon.nl",
+        "Amazon.pl", "Amazon.se", "Amazon.com.be", "Amazon.ie", "Amazon.com.tr",
+        "Amazon.ae", "Amazon.sa", "Noon",
+        "Bol.com", "Bol.com (BE)",
+        "Cdiscount", "Ebay DE", "Ebay EU",
+        "MediaMarkt", "Otto", "EU DTC", "EU Amazon", "Allegro",
+        "Zalando DE", "Zalando ES", "Zalando FR", "Zalando AT", "Zalando IT",
+        "Zalando CH", "Zalando BE", "Zalando NL", "Zalando PL", "Zalando SE",
+        "Zalando DK", "Zalando FI", "Zalando LU",
+    ],
+}
+
+# ══════════════════════════════════════════════
 # Input + Results in tabs
 # ══════════════════════════════════════════════
-input_tab, results_tab = st.tabs(["🔍 Search", "📊 Results"])
+input_tab, brand_tab, results_tab = st.tabs(["🔍 Search by ID", "🏷️ Browse by Brand", "📊 Results"])
 
 with input_tab:
     st.markdown("")
@@ -382,9 +493,77 @@ with input_tab:
                 st.error(f"Query failed: {e}")
 
 
+with brand_tab:
+    st.markdown("")
+    st.markdown("#### 🏷️ Browse All Listings for a Brand")
+    st.caption("Select a brand and region to fetch all their listings. Use filters in the Results tab to narrow down further.")
+
+    bb1, bb2, bb3 = st.columns(3)
+
+    with bb1:
+        # Fetch vendor list (cached)
+        try:
+            vendor_list = get_vendor_list()
+        except Exception:
+            vendor_list = []
+        sel_brand = st.selectbox("Select Brand / Vendor", options=[""] + vendor_list,
+                                  key="brand_select", placeholder="Start typing to search...")
+
+    with bb2:
+        brand_region = st.selectbox("Region", ["All", "UK", "EU"], key="brand_region")
+
+    with bb3:
+        result_limit = st.selectbox("Max Results", ["500", "1000", "2000", "5000", "No limit"],
+                                     key="brand_limit")
+
+    if sel_brand:
+        # Determine region marketplaces
+        region_mps = None
+        if brand_region != "All":
+            region_mps = REGION_MAP.get(brand_region, [])
+
+        # Determine limit
+        limit_val = None if result_limit == "No limit" else int(result_limit)
+
+        if st.button("🏷️ Fetch All Listings", type="primary", use_container_width=True, key="brand_fetch"):
+            progress_bar = st.progress(0, text="Connecting to Snowflake...")
+            time.sleep(0.3)
+            progress_bar.progress(20, text=f"Fetching listings for {sel_brand}...")
+            time.sleep(0.2)
+            progress_bar.progress(40, text="Querying across all marketplaces...")
+
+            try:
+                df = run_brand_lookup(sel_brand, region_mps, limit_val)
+                progress_bar.progress(80, text="Processing results...")
+                time.sleep(0.2)
+
+                if df.empty:
+                    progress_bar.progress(100, text="Done — no listings found.")
+                    st.warning(f"No listings found for **{sel_brand}**" +
+                              (f" in **{brand_region}** region." if brand_region != "All" else "."))
+                    st.session_state["results_df"] = pd.DataFrame()
+                else:
+                    progress_bar.progress(100, text=f"Done — {len(df)} listings found!")
+                    st.session_state["results_df"] = df
+                    st.session_state["skus_count"] = len(df)
+                    st.session_state["skus_list"] = []
+                    st.session_state["lookup_count"] += 1
+                    st.session_state["total_items_looked_up"] += len(df)
+                    region_label = f" in **{brand_region}**" if brand_region != "All" else ""
+                    st.success(f"✅ Found **{len(df)}** listings for **{sel_brand}**{region_label}! Switch to the **📊 Results** tab.")
+
+                time.sleep(0.5)
+                progress_bar.empty()
+            except Exception as e:
+                progress_bar.empty()
+                st.error(f"Query failed: {e}")
+    else:
+        st.info("👆 Select a brand to get started.")
+
+
 with results_tab:
     if "results_df" not in st.session_state or st.session_state.get("results_df", pd.DataFrame()).empty:
-        st.info("👈 Enter items in the **Search** tab and click **Lookup** to see results here.")
+        st.info("👈 Use **Search by ID** or **Browse by Brand** tab, then check results here.")
     else:
         df = st.session_state["results_df"].copy()
         skus_count = st.session_state.get("skus_count", 0)
@@ -416,24 +595,6 @@ with results_tab:
         # ── Filters ──
         st.markdown("### 🔽 Filters")
         search_text = st.text_input("🔍 Search across all fields", placeholder="Type to search...", key="search_all")
-
-        # Region mapping
-        REGION_MAP = {
-            "UK": [
-                "Amazon.co.uk", "TikTok UK", "Ebay UK", "Tesco",
-            ],
-            "EU": [
-                "Amazon.de", "Amazon.fr", "Amazon.es", "Amazon.it", "Amazon.nl",
-                "Amazon.pl", "Amazon.se", "Amazon.com.be", "Amazon.ie", "Amazon.com.tr",
-                "Amazon.ae", "Amazon.sa", "Noon",
-                "Bol.com", "Bol.com (BE)",
-                "Cdiscount", "Ebay DE", "Ebay EU",
-                "MediaMarkt", "Otto", "EU DTC", "EU Amazon", "Allegro",
-                "Zalando DE", "Zalando ES", "Zalando FR", "Zalando AT", "Zalando IT",
-                "Zalando CH", "Zalando BE", "Zalando NL", "Zalando PL", "Zalando SE",
-                "Zalando DK", "Zalando FI", "Zalando LU",
-            ],
-        }
 
         # Region filter row
         reg_col, mp_col, vn_col, dno_col = st.columns(4)
