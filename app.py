@@ -765,10 +765,62 @@ with results_tab:
                 use_container_width=True,
             )
 
-        # Copy to clipboard (tab-separated for pasting into Excel/Sheets)
+        # Copy to clipboard — one-click button using HTML/JS component
         st.markdown("")
-        with st.expander("📋 Copy to Clipboard — paste directly into Excel or Google Sheets"):
+        with st.expander("📋 Copy to Clipboard — one click, includes headers"):
             copy_df = filtered[selected_cols].rename(columns=rename_map)
             tsv_text = copy_df.to_csv(index=False, sep="\t")
-            st.code(tsv_text, language=None)
-            st.caption("Select all the text above (Ctrl+A), copy (Ctrl+C), and paste into Excel or Google Sheets. It will auto-format into columns.")
+
+            # Escape for embedding in JS
+            tsv_escaped = (
+                tsv_text.replace("\\", "\\\\")
+                .replace("`", "\\`")
+                .replace("$", "\\$")
+            )
+
+            row_count = len(copy_df)
+            col_count = len(copy_df.columns)
+
+            copy_html = f"""
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                <button id="copy-btn" onclick="copyToClipboard()" style="
+                    background:linear-gradient(135deg,#3b82f6,#6366f1);
+                    color:white;border:none;border-radius:8px;
+                    padding:10px 20px;font-size:14px;font-weight:600;
+                    cursor:pointer;box-shadow:0 2px 8px rgba(59,130,246,0.3);
+                    transition:all 0.2s;
+                ">📋 Copy {row_count} rows × {col_count} columns</button>
+                <span id="copy-status" style="font-size:13px;color:#64748b;"></span>
+            </div>
+            <textarea id="copy-data" style="position:absolute;left:-9999px;">{tsv_text}</textarea>
+            <script>
+                function copyToClipboard() {{
+                    const textarea = document.getElementById('copy-data');
+                    const status = document.getElementById('copy-status');
+                    const btn = document.getElementById('copy-btn');
+                    textarea.select();
+                    textarea.setSelectionRange(0, 99999);
+                    try {{
+                        navigator.clipboard.writeText(textarea.value).then(() => {{
+                            status.innerHTML = '✅ Copied! Paste into Excel or Google Sheets.';
+                            status.style.color = '#22c55e';
+                            btn.style.background = 'linear-gradient(135deg,#22c55e,#16a34a)';
+                            setTimeout(() => {{
+                                status.innerHTML = '';
+                                btn.style.background = 'linear-gradient(135deg,#3b82f6,#6366f1)';
+                            }}, 3000);
+                        }});
+                    }} catch (err) {{
+                        document.execCommand('copy');
+                        status.innerHTML = '✅ Copied!';
+                        status.style.color = '#22c55e';
+                    }}
+                }}
+            </script>
+            """
+            st.components.v1.html(copy_html, height=60)
+            st.caption(f"Click the button above — it copies {row_count} rows with column headers, ready to paste into Excel or Google Sheets.")
+
+            # Preview/fallback: still show the text in case the button doesn't work
+            with st.expander("Show preview text (manual copy fallback)"):
+                st.code(tsv_text, language=None)
