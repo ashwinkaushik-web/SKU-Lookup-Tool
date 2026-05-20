@@ -821,6 +821,6 @@ with results_tab:
             st.components.v1.html(copy_html, height=60)
             st.caption(f"Click the button above — it copies {row_count} rows with column headers, ready to paste into Excel or Google Sheets.")
 
-            # Preview/fallback: still show the text in case the button doesn't work
-            with st.expander("Show preview text (manual copy fallback)"):
-                st.code(tsv_text, language=None)
+            # Preview/fallback: show the text directly (no nested expander)
+            st.markdown("**Manual copy fallback** (if the button doesn't work):")
+            st.code(tsv_text, language=None)
