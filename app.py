@@ -54,6 +54,46 @@ st.markdown("""
 
     /* Copy buttons */
     .copy-section {background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:10px;margin-top:8px;}
+
+    /* ── FR Check Redesign ── */
+    .fr-summary-tile {background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px 18px;}
+    .fr-summary-tile .lbl {font-size:10px;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;}
+    .fr-summary-tile .val {font-size:26px;font-weight:700;margin-top:2px;}
+    .fr-summary-tile.passed {background:rgba(46,160,67,0.12);border-color:rgba(46,160,67,0.4);}
+    .fr-summary-tile.passed .val {color:#3fb950;}
+    .fr-summary-tile.flagged {background:rgba(248,81,73,0.12);border-color:rgba(248,81,73,0.4);}
+    .fr-summary-tile.flagged .val {color:#f85149;}
+    .fr-summary-tile.missing {background:rgba(210,153,34,0.10);border-color:rgba(210,153,34,0.3);}
+    .fr-summary-tile.missing .val {color:#d29922;}
+    .fr-summary-tile.total .val {color:#60a5fa;}
+
+    /* Listing cards */
+    .fr-card {background:#161b22;border:1px solid #30363d;border-radius:10px;margin-bottom:10px;overflow:hidden;}
+    .fr-card.flagged {border-left:3px solid #f85149;}
+    .fr-card.passed {border-left:3px solid #3fb950;}
+    .fr-card-head {padding:14px 18px;display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;}
+    .fr-card-title {font-size:14px;font-weight:600;color:#e6edf3;}
+    .fr-card-meta {font-size:11px;color:#7d8590;margin-top:3px;font-family:monospace;}
+    .fr-card-meta b {color:#c9d1d9;font-weight:500;}
+    .fr-card-status {display:flex;align-items:center;gap:14px;}
+    .fr-status-pill {padding:5px 12px;border-radius:14px;font-size:11px;font-weight:700;letter-spacing:0.3px;white-space:nowrap;}
+    .fr-status-pill.ok {background:rgba(46,160,67,0.15);color:#3fb950;}
+    .fr-status-pill.bad {background:rgba(248,81,73,0.15);color:#f85149;}
+    .fr-attr-strip {display:flex;gap:4px;flex-wrap:wrap;}
+    .fr-attr-dot {width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;}
+    .fr-attr-dot.g {background:rgba(46,160,67,0.18);color:#3fb950;}
+    .fr-attr-dot.r {background:rgba(248,81,73,0.18);color:#f85149;}
+    .fr-attr-dot.i {background:rgba(99,110,123,0.18);color:#8b949e;}
+
+    /* Attribute details grid */
+    .fr-attr-grid {display:grid;grid-template-columns:repeat(2, 1fr);gap:8px;}
+    .fr-attr-row {display:flex;align-items:center;gap:10px;padding:10px 12px;background:#161b22;border-radius:6px;border-left:3px solid transparent;}
+    .fr-attr-row.g {border-left-color:#3fb950;}
+    .fr-attr-row.r {border-left-color:#f85149;}
+    .fr-attr-row.i {border-left-color:#636e7b;}
+    .fr-attr-row .nm {flex:1;font-size:12px;color:#c9d1d9;font-weight:500;}
+    .fr-attr-row .vl {font-family:monospace;font-size:11px;color:#7d8590;}
+    .fr-attr-row .mk {font-size:13px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -313,6 +353,13 @@ FR_ATTRIBUTES = [
     {"id": "CATALOG_DNO_STATUS", "label": "DNO Status", "type": "check"},
     {"id": "IS_TEMPORARY", "label": "Is Temporary", "type": "info"},
     {"id": "MARKETPLACE_SECONDARY_ID_TYPE", "label": "Secondary ID Type", "type": "info"},
+]
+
+# Quick Check preset = the most important checks (no info-only)
+QUICK_CHECK_ATTRS = [
+    "LISTING_IS_COMMINGLED", "IS_ACTIVE", "LISTING_IS_SHIPABLE",
+    "LISTING_PREP_PLAN_ID", "ITEM_PREP_PLAN_ID", "CAN_EXPIRE",
+    "IS_GLASS", "CATALOG_DNO_STATUS",
 ]
 
 
@@ -780,82 +827,90 @@ with brand_tab:
 
 with fr_tab:
     st.markdown("")
-    st.markdown("#### 🔬 Functional Readiness Check")
-    st.caption("Validate listing attributes against Pattern's readiness rules. Paste identifiers below, choose what to check, and get pass/fail per listing.")
+    st.markdown("### 🔬 Functional Readiness Check")
+    st.caption("Validate listing attributes against Pattern's readiness rules. Paste identifiers, pick what to check, and get pass/fail per listing.")
+    st.markdown("")
 
-    # ── Step 1: Input ──
-    st.markdown("##### Step 1 — Enter Identifiers")
-    fr_col1, fr_col2 = st.columns([1, 3])
-    with fr_col1:
-        fr_id_type = st.radio("Identifier type", ["Listing ID", "SKU"], key="fr_id_type", horizontal=True)
-    with fr_col2:
+    # ── INPUT CARD ──
+    in_col1, in_col2 = st.columns([1, 4])
+    with in_col1:
+        fr_id_type = st.radio("ID Type", ["Listing ID", "SKU"], key="fr_id_type", label_visibility="collapsed")
+    with in_col2:
         fr_text = st.text_area(
-            "Paste identifiers (one per line, or comma/space separated)",
-            placeholder="e.g.\nL0NC2POW\nL09SMWN7\nL05RO0W8",
-            height=140, key="fr_text",
+            "Identifiers",
+            placeholder="Paste identifiers — one per line, or comma/space separated\ne.g.  L0NC2POW, L09SMWN7, L05RO0W8",
+            height=100, key="fr_text", label_visibility="collapsed",
         )
 
     # Parse identifiers
     fr_ids = []
     if fr_text.strip():
-        # Support comma, newline, space, tab separators
         import re
         fr_ids = [s.strip() for s in re.split(r"[\n,\s\t]+", fr_text.strip()) if s.strip()]
-        # Dedupe while preserving order
         seen = set()
         fr_ids = [x for x in fr_ids if not (x in seen or seen.add(x))]
-    st.caption(f"{len(fr_ids)} unique identifier(s) entered • Max 500")
+    st.caption(f"**{len(fr_ids)}** identifier(s) entered • Max 500")
 
-    # ── Step 2: Attribute selector ──
-    st.markdown("##### Step 2 — Choose Attributes to Check")
-
-    # Initialize selected attrs in session state
-    if "fr_selected_attrs" not in st.session_state:
-        st.session_state["fr_selected_attrs"] = [a["id"] for a in FR_ATTRIBUTES]
-
-    # Preset buttons
-    preset_col1, preset_col2, preset_col3, preset_col4, _ = st.columns([1, 1, 1, 1, 4])
-    with preset_col1:
-        if st.button("All", key="fr_all", use_container_width=True):
-            st.session_state["fr_selected_attrs"] = [a["id"] for a in FR_ATTRIBUTES]
-            st.rerun()
-    with preset_col2:
-        if st.button("None", key="fr_none", use_container_width=True):
-            st.session_state["fr_selected_attrs"] = []
-            st.rerun()
-    with preset_col3:
-        if st.button("Checks", key="fr_checks", use_container_width=True):
-            st.session_state["fr_selected_attrs"] = [a["id"] for a in FR_ATTRIBUTES if a["type"] == "check"]
-            st.rerun()
-    with preset_col4:
-        if st.button("Info", key="fr_info", use_container_width=True):
-            st.session_state["fr_selected_attrs"] = [a["id"] for a in FR_ATTRIBUTES if a["type"] == "info"]
-            st.rerun()
-
-    # Multi-select with friendly labels
-    attr_label_map = {a["label"]: a["id"] for a in FR_ATTRIBUTES}
-    attr_id_to_label = {a["id"]: a["label"] for a in FR_ATTRIBUTES}
-    default_labels = [attr_id_to_label[aid] for aid in st.session_state["fr_selected_attrs"] if aid in attr_id_to_label]
-
-    selected_labels = st.multiselect(
-        "Attributes",
-        options=[a["label"] for a in FR_ATTRIBUTES],
-        default=default_labels,
-        key="fr_attr_select",
-        label_visibility="collapsed",
-    )
-    selected_attr_ids = [attr_label_map[lbl] for lbl in selected_labels]
-    st.session_state["fr_selected_attrs"] = selected_attr_ids
-    st.caption(f"{len(selected_attr_ids)} attribute(s) selected")
-
-    # ── Step 3: Run ──
     st.markdown("")
+
+    # ── ATTRIBUTE PRESETS ──
+    if "fr_preset" not in st.session_state:
+        st.session_state["fr_preset"] = "quick"
+    if "fr_custom_attrs" not in st.session_state:
+        st.session_state["fr_custom_attrs"] = QUICK_CHECK_ATTRS.copy()
+
+    st.markdown("**Attributes to Check**")
+    p_col1, p_col2, p_col3, _ = st.columns([1, 1, 1, 3])
+    with p_col1:
+        if st.button(f"⚡ Quick Check ({len(QUICK_CHECK_ATTRS)})",
+                     type="primary" if st.session_state["fr_preset"] == "quick" else "secondary",
+                     use_container_width=True, key="fr_btn_quick"):
+            st.session_state["fr_preset"] = "quick"
+            st.rerun()
+    with p_col2:
+        if st.button(f"📋 All Attributes ({len(FR_ATTRIBUTES)})",
+                     type="primary" if st.session_state["fr_preset"] == "all" else "secondary",
+                     use_container_width=True, key="fr_btn_all"):
+            st.session_state["fr_preset"] = "all"
+            st.rerun()
+    with p_col3:
+        if st.button("🛠 Custom...",
+                     type="primary" if st.session_state["fr_preset"] == "custom" else "secondary",
+                     use_container_width=True, key="fr_btn_custom"):
+            st.session_state["fr_preset"] = "custom"
+            st.rerun()
+
+    # Determine which attributes are selected based on preset
+    if st.session_state["fr_preset"] == "quick":
+        selected_attr_ids = QUICK_CHECK_ATTRS.copy()
+        st.caption("✓ Commingled · Active · Shipable · Listing Prep Plan · Item Prep Plan · Can Expire · Glass · DNO Status")
+    elif st.session_state["fr_preset"] == "all":
+        selected_attr_ids = [a["id"] for a in FR_ATTRIBUTES]
+        st.caption(f"✓ All {len(FR_ATTRIBUTES)} attributes (10 checks + 4 info)")
+    else:  # custom
+        attr_label_map = {a["label"]: a["id"] for a in FR_ATTRIBUTES}
+        attr_id_to_label_local = {a["id"]: a["label"] for a in FR_ATTRIBUTES}
+        default_labels = [attr_id_to_label_local[aid] for aid in st.session_state["fr_custom_attrs"] if aid in attr_id_to_label_local]
+        selected_labels = st.multiselect(
+            "Pick attributes",
+            options=[a["label"] for a in FR_ATTRIBUTES],
+            default=default_labels,
+            key="fr_attr_select",
+            label_visibility="collapsed",
+        )
+        selected_attr_ids = [attr_label_map[lbl] for lbl in selected_labels] if selected_labels else []
+        st.session_state["fr_custom_attrs"] = selected_attr_ids
+        st.caption(f"✓ {len(selected_attr_ids)} attribute(s) selected")
+
+    st.markdown("")
+
+    # ── RUN BUTTON ──
     if fr_ids and selected_attr_ids:
         if len(fr_ids) > 500:
             st.warning("⚠️ Max 500 identifiers. Only the first 500 will be processed.")
             fr_ids = fr_ids[:500]
 
-        if st.button("▶ Run FR Check", type="primary", use_container_width=True, key="fr_run"):
+        if st.button(f"▶ Run FR Check on {len(fr_ids)} listing(s)", type="primary", use_container_width=True, key="fr_run"):
             progress_bar = st.progress(0, text="Connecting to Snowflake...")
             time.sleep(0.2)
             progress_bar.progress(20, text=f"Fetching catalogue data for {len(fr_ids)} listing(s)...")
@@ -876,10 +931,8 @@ with fr_tab:
                     st.session_state["fr_results"] = fr_results
                     st.session_state["fr_selected_attrs_at_run"] = selected_attr_ids
                     st.session_state["fr_input_ids"] = fr_ids
-
                     passed = sum(1 for r in fr_results if r["passed"])
-                    flagged = len(fr_results) - passed
-                    st.success(f"✅ Checked **{len(fr_results)}** listings • **{passed}** passed • **{flagged}** flagged")
+                    st.success(f"✅ Done — {passed} passed, {len(fr_results) - passed} flagged.")
 
                 time.sleep(0.3)
                 progress_bar.empty()
@@ -889,33 +942,40 @@ with fr_tab:
     elif fr_ids and not selected_attr_ids:
         st.info("Select at least one attribute to check.")
     elif not fr_ids:
-        st.info("👆 Enter at least one identifier to begin.")
+        st.info("👆 Enter at least one identifier above to begin.")
 
-    # ── Step 4: Show results ──
+    # ══════════════════════════════════════════════
+    # RESULTS — CARD VIEW
+    # ══════════════════════════════════════════════
     if "fr_results" in st.session_state and st.session_state["fr_results"]:
         results = st.session_state["fr_results"]
         attrs_at_run = st.session_state.get("fr_selected_attrs_at_run", [])
         input_ids = st.session_state.get("fr_input_ids", [])
 
-        st.markdown("---")
-        st.markdown("##### Results")
+        attr_id_to_label = {a["id"]: a["label"] for a in FR_ATTRIBUTES}
+        attr_id_to_type = {a["id"]: a["type"] for a in FR_ATTRIBUTES}
 
-        # Summary metrics
+        st.markdown("---")
+
+        # Summary tiles
         total = len(results)
         passed = sum(1 for r in results if r["passed"])
         flagged = total - passed
-        # Find missing items (entered but not returned)
         found_ids = set()
         for r in results:
             found_ids.add(str(r.get("listing_id", "")).upper())
             found_ids.add(str(r.get("sku", "")).upper())
         missing_ids = [i for i in input_ids if i.upper() not in found_ids]
 
-        m1, m2, m3, m4 = st.columns(4)
-        with m1: st.markdown(f'<div class="metric-card mc-total"><div class="label">Total Checked</div><div class="value">{total}</div></div>', unsafe_allow_html=True)
-        with m2: st.markdown(f'<div class="metric-card mc-ship"><div class="label">Passed</div><div class="value">{passed}</div></div>', unsafe_allow_html=True)
-        with m3: st.markdown(f'<div class="metric-card mc-dno"><div class="label">Flagged</div><div class="value">{flagged}</div></div>', unsafe_allow_html=True)
-        with m4: st.markdown(f'<div class="metric-card mc-noship"><div class="label">Not Found</div><div class="value">{len(missing_ids)}</div></div>', unsafe_allow_html=True)
+        s1, s2, s3, s4 = st.columns(4)
+        with s1:
+            st.markdown(f'<div class="fr-summary-tile total"><div class="lbl">Total Checked</div><div class="val">{total}</div></div>', unsafe_allow_html=True)
+        with s2:
+            st.markdown(f'<div class="fr-summary-tile passed"><div class="lbl">Passed</div><div class="val">{passed}</div></div>', unsafe_allow_html=True)
+        with s3:
+            st.markdown(f'<div class="fr-summary-tile flagged"><div class="lbl">Flagged</div><div class="val">{flagged}</div></div>', unsafe_allow_html=True)
+        with s4:
+            st.markdown(f'<div class="fr-summary-tile missing"><div class="lbl">Not Found</div><div class="val">{len(missing_ids)}</div></div>', unsafe_allow_html=True)
 
         st.markdown("")
 
@@ -926,92 +986,90 @@ with fr_tab:
                 st.markdown(missing_html, unsafe_allow_html=True)
 
         # Filter
-        fc1, fc2, _ = st.columns([1, 1, 4])
-        with fc1:
-            fr_filter = st.radio("Show", ["All", "Passed", "Flagged"], key="fr_filter", horizontal=True)
+        fr_filter = st.radio("Show", [f"All ({total})", f"✅ Passed ({passed})", f"⛔ Flagged ({flagged})"],
+                             key="fr_filter", horizontal=True, label_visibility="collapsed")
 
-        # Filtered results
-        if fr_filter == "Passed":
+        if "Passed" in fr_filter:
             shown = [r for r in results if r["passed"]]
-        elif fr_filter == "Flagged":
+        elif "Flagged" in fr_filter:
             shown = [r for r in results if not r["passed"]]
         else:
             shown = results
 
-        st.caption(f"Showing **{len(shown)}** of **{len(results)}** results")
+        st.caption(f"Showing **{len(shown)}** of **{total}** results")
 
-        # Build display dataframe
-        display_rows = []
-        for r in shown:
-            row_data = {
-                "Listing ID": r["listing_id"],
-                "SKU": r["sku"],
-                "Product Name": str(r["product_name"])[:60] if r["product_name"] else "",
-                "Marketplace": r["marketplace"],
-                "Country": r["country_code"],
-                "Vendor": r["vendor"],
-                "Status": "✅ Passed" if r["passed"] else f"⛔ Flagged ({r['red_count']})",
-            }
-            # Add each attribute's status
+        # ── Listing cards ──
+        for idx, r in enumerate(shown):
+            card_class = "passed" if r["passed"] else "flagged"
+            status_class = "ok" if r["passed"] else "bad"
+            status_text = "✅ PASSED" if r["passed"] else f"⛔ FLAGGED · {r['red_count']} issue{'s' if r['red_count'] != 1 else ''}"
+
+            # Build attribute dots strip
+            dots_html = ""
             for attr_id in attrs_at_run:
-                attr_label = attr_id_to_label.get(attr_id, attr_id)
                 det = r["details"].get(attr_id, {})
                 status = det.get("status", "n")
-                icon = {"g": "✅", "r": "⛔", "i": "ℹ️", "n": "—"}.get(status, "—")
-                value = det.get("value", "") or "—"
-                row_data[attr_label] = f"{icon} {value}"
-            display_rows.append(row_data)
+                # Skip info-only on the dot strip (less visual noise)
+                if attr_id_to_type.get(attr_id) == "info":
+                    continue
+                icon = {"g": "✓", "r": "✕", "i": "·"}.get(status, "·")
+                lbl = attr_id_to_label.get(attr_id, attr_id)
+                tooltip = f"{lbl}: {det.get('text', '')}"
+                # Use html escape for tooltip
+                tooltip_escaped = tooltip.replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+                dots_html += f'<span class="fr-attr-dot {status}" title="{tooltip_escaped}">{icon}</span>'
 
-        display_fr_df = pd.DataFrame(display_rows)
+            # Card header
+            product_name = str(r["product_name"])[:80] if r["product_name"] else "(no product name)"
+            card_html = f'''
+            <div class="fr-card {card_class}">
+                <div class="fr-card-head">
+                    <div>
+                        <div class="fr-card-title">{product_name}</div>
+                        <div class="fr-card-meta"><b>{r["listing_id"]}</b> • {r["sku"] or "—"} • {r["marketplace"] or "—"} • {r["country_code"] or "—"} • {r["vendor"] or "—"}</div>
+                    </div>
+                    <div class="fr-card-status">
+                        <div class="fr-attr-strip">{dots_html}</div>
+                        <div class="fr-status-pill {status_class}">{status_text}</div>
+                    </div>
+                </div>
+            </div>
+            '''
+            st.markdown(card_html, unsafe_allow_html=True)
 
-        # Color rows: red for flagged
-        def fr_color_rows(row):
-            if "Status" in row.index and "Flagged" in str(row.get("Status", "")):
-                return ["background-color: rgba(239,68,68,0.08)"] * len(row)
-            if "Status" in row.index and "Passed" in str(row.get("Status", "")):
-                return ["background-color: rgba(34,197,94,0.05)"] * len(row)
-            return [""] * len(row)
+            # Streamlit expander for details (below the card)
+            with st.expander(f"🔍 View details for {r['listing_id']}", expanded=False):
+                # Build attribute grid
+                attr_rows_html = '<div class="fr-attr-grid">'
+                for attr_id in attrs_at_run:
+                    det = r["details"].get(attr_id, {})
+                    status = det.get("status", "n")
+                    mark = {"g": "✅", "r": "⛔", "i": "ℹ️", "n": "—"}.get(status, "—")
+                    lbl = attr_id_to_label.get(attr_id, attr_id)
+                    val = det.get("value", "") or "—"
+                    note = det.get("text", "")
+                    # Show note if it adds info beyond the value
+                    display_val = val if note == val or note in ("Active ✓", "Shipable ✓", "Not DNO ✓") else f"{val} — {note}"
+                    if status == "i":
+                        display_val = val
+                    display_val_escaped = str(display_val).replace("<", "&lt;").replace(">", "&gt;")
+                    lbl_escaped = lbl.replace("<", "&lt;").replace(">", "&gt;")
+                    attr_rows_html += f'''
+                    <div class="fr-attr-row {status}">
+                        <span class="mk">{mark}</span>
+                        <span class="nm">{lbl_escaped}</span>
+                        <span class="vl">{display_val_escaped}</span>
+                    </div>
+                    '''
+                attr_rows_html += '</div>'
+                st.markdown(attr_rows_html, unsafe_allow_html=True)
 
-        if len(display_fr_df) > 5000:
-            st.dataframe(display_fr_df, use_container_width=True, hide_index=True, height=600)
-        else:
-            st.dataframe(
-                display_fr_df.style.apply(fr_color_rows, axis=1),
-                use_container_width=True, hide_index=True,
-                height=min(len(display_fr_df) * 38 + 40, 600),
-            )
-
-        # Detail view for one listing
-        with st.expander("🔍 Drill down into a specific listing"):
-            if shown:
-                drill_options = [f"{r['listing_id']} — {str(r['product_name'])[:40]}" for r in shown]
-                drill_choice = st.selectbox("Pick a listing", drill_options, key="fr_drill")
-                if drill_choice:
-                    drill_idx = drill_options.index(drill_choice)
-                    drill = shown[drill_idx]
-                    st.markdown(f"**{drill['listing_id']}** • {drill['sku']} • {drill['marketplace']}")
-                    detail_rows = []
-                    for attr_id in attrs_at_run:
-                        attr_label = attr_id_to_label.get(attr_id, attr_id)
-                        det = drill["details"].get(attr_id, {})
-                        status = det.get("status", "n")
-                        icon = {"g": "✅ Pass", "r": "⛔ Fail", "i": "ℹ️ Info", "n": "—"}.get(status, "—")
-                        detail_rows.append({
-                            "Attribute": attr_label,
-                            "Value": det.get("value", "") or "—",
-                            "Status": icon,
-                            "Note": det.get("text", ""),
-                        })
-                    st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
-
-        # Exports
+        # ── Exports ──
         st.markdown("")
-        st.markdown("##### Export")
+        st.markdown("##### 📤 Export Results")
         ex_c1, ex_c2, ex_c3 = st.columns(3)
 
-        # Build export dataframes
         def build_export_df(rows_filter):
-            """rows_filter: 'pass' or 'fail'"""
             rows_out = []
             for r in results:
                 if rows_filter == "pass" and not r["passed"]:
@@ -1029,7 +1087,6 @@ with fr_tab:
                 for attr_id in attrs_at_run:
                     label = attr_id_to_label.get(attr_id, attr_id)
                     det = r["details"].get(attr_id, {})
-                    # In Passed export, fill only Pass/Info cells. In Flagged, only Fail.
                     if rows_filter == "pass":
                         if det.get("status") in ("g", "i"):
                             base[f"{label} — Value"] = det.get("value", "")
@@ -1039,7 +1096,7 @@ with fr_tab:
                             base[f"{label} — Value"] = ""
                             base[f"{label} — Status"] = ""
                             base[f"{label} — Note"] = ""
-                    else:  # fail
+                    else:
                         if det.get("status") == "r":
                             base[f"{label} — Value"] = det.get("value", "")
                             base[f"{label} — Status"] = "Fail"
