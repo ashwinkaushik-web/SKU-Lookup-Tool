@@ -985,7 +985,7 @@ with fr_tab:
                 missing_html = "".join(f'<span class="missing-item">{m}</span>' for m in missing_ids)
                 st.markdown(missing_html, unsafe_allow_html=True)
 
-        # Filter
+        # Filter — Pass/Flagged
         fr_filter = st.radio("Show", [f"All ({total})", f"✅ Passed ({passed})", f"⛔ Flagged ({flagged})"],
                              key="fr_filter", horizontal=True, label_visibility="collapsed")
 
@@ -995,6 +995,46 @@ with fr_tab:
             shown = [r for r in results if not r["passed"]]
         else:
             shown = results
+
+        # ── Additional filters: Brand / Marketplace / Country / Attribute ──
+        st.markdown("")
+
+        # Build option lists from current results
+        brand_opts = sorted(set(r["vendor"] for r in results if r["vendor"]))
+        marketplace_opts = sorted(set(r["marketplace"] for r in results if r["marketplace"]))
+        country_opts = sorted(set(r["country_code"] for r in results if r["country_code"]))
+        # Attribute options: only show attributes that have at least one failure across all results
+        flagging_attrs = set()
+        for r in results:
+            for aid, det in r["details"].items():
+                if det.get("status") == "r":
+                    flagging_attrs.add(aid)
+        flagging_attr_opts = sorted([attr_id_to_label[a] for a in flagging_attrs if a in attr_id_to_label])
+
+        f1, f2, f3, f4 = st.columns(4)
+        with f1:
+            sel_brands = st.multiselect("Brand", brand_opts, key="fr_f_brand", placeholder="All brands")
+        with f2:
+            sel_mps = st.multiselect("Marketplace", marketplace_opts, key="fr_f_mp", placeholder="All marketplaces")
+        with f3:
+            sel_countries = st.multiselect("Country", country_opts, key="fr_f_country", placeholder="All countries")
+        with f4:
+            sel_failing_attrs = st.multiselect("Failing attribute", flagging_attr_opts, key="fr_f_attr",
+                                                placeholder="Any failing attribute")
+
+        # Apply additional filters
+        if sel_brands:
+            shown = [r for r in shown if r["vendor"] in sel_brands]
+        if sel_mps:
+            shown = [r for r in shown if r["marketplace"] in sel_mps]
+        if sel_countries:
+            shown = [r for r in shown if r["country_code"] in sel_countries]
+        if sel_failing_attrs:
+            # Map labels back to ids
+            label_to_id = {a["label"]: a["id"] for a in FR_ATTRIBUTES}
+            sel_failing_ids = [label_to_id[lbl] for lbl in sel_failing_attrs if lbl in label_to_id]
+            shown = [r for r in shown
+                     if any(r["details"].get(aid, {}).get("status") == "r" for aid in sel_failing_ids)]
 
         st.caption(f"Showing **{len(shown)}** of **{total}** results")
 
