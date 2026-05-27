@@ -109,7 +109,7 @@ st.markdown("""
     }
     .inv-card .inv-card-label {font-size:15px;color:#7d8590;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;margin-bottom:8px;}
     .inv-card .inv-card-row {display:flex;justify-content:space-between;align-items:baseline;font-size:12px;padding:3px 0;}
-    .inv-card .inv-card-row .ch {color:#94a3b8;font-weight:500;font-size:13px;}
+    .inv-card .inv-card-row .ch {color:#94a3b8;font-weight:600;font-size:15px;}
     .inv-card .inv-card-row .v {font-weight:700;font-size:22px;color:#e6edf3;}
     .inv-card .inv-card-row .v.pfs {color:#ec4899;}
     .inv-card .inv-card-row .v.fba {color:#f59e0b;}
@@ -2098,35 +2098,40 @@ with inventory_tab:
 
             st.caption(f"Showing **{len(display_df):,}** of **{len(inv_df_full):,}** rows")
 
-            # Style: highlight calculated columns + DNO rows + add Master ID divider
-            first_rows_of_master = set()
-            prev_master = None
-            for idx, val in display_df["Master ID"].items() if "Master ID" in display_df.columns else []:
-                if val != prev_master and prev_master is not None:
-                    first_rows_of_master.add(idx)
-                prev_master = val
+            # Style: highlight calculated columns + DNO rows + visually separate Master ID groups
+            # st.dataframe ignores border styling, so we use alternating background tints per Master ID group
+            master_id_group_num = {}  # master_id -> group index (0, 1, 2, ...)
+            if "Master ID" in display_df.columns:
+                seen_masters = []
+                for val in display_df["Master ID"].tolist():
+                    if val not in seen_masters:
+                        seen_masters.append(val)
+                master_id_group_num = {m: i for i, m in enumerate(seen_masters)}
 
             def inv_color_rows(row):
                 styles = [""] * len(row)
-                # Red tint for DNO=True rows
+                # Base: alternating Master ID group tints (very subtle, just enough to see the boundary)
+                if "Master ID" in row.index:
+                    master = row.get("Master ID")
+                    if master in master_id_group_num:
+                        # Even groups: slightly lighter; Odd groups: slightly darker (creates visible alternation)
+                        if master_id_group_num[master] % 2 == 1:
+                            styles = ["background-color: rgba(148,163,184,0.05)"] * len(row)
+                # DNO red tint (overrides alternation)
                 if "DNO" in row.index:
                     if str(row.get("DNO", "")).strip().upper() == "TRUE":
-                        styles = ["background-color: rgba(239,68,68,0.10)"] * len(row)
-                # Color the calculated columns
+                        styles = ["background-color: rgba(239,68,68,0.12)"] * len(row)
+                # Color the calculated columns (Actual Available)
                 for i, col in enumerate(row.index):
                     if col == "Actual Available":
                         try:
                             v = float(row[col]) if pd.notna(row[col]) else 0
                             if v < 0:
-                                styles[i] = (styles[i] + ";" if styles[i] else "") + "background-color: rgba(245,158,11,0.25); color: #f59e0b; font-weight: 600;"
+                                styles[i] = "background-color: rgba(245,158,11,0.25); color: #f59e0b; font-weight: 600;"
                             elif v > 0:
-                                styles[i] = (styles[i] + ";" if styles[i] else "") + "background-color: rgba(34,197,94,0.10); color: #22c55e; font-weight: 600;"
+                                styles[i] = "background-color: rgba(34,197,94,0.10); color: #22c55e; font-weight: 600;"
                         except (ValueError, TypeError):
                             pass
-                # Master ID divider — thin line at top of first row of a new master_id group
-                if row.name in first_rows_of_master:
-                    for i in range(len(styles)):
-                        styles[i] = (styles[i] + ";" if styles[i] else "") + "border-top: 2px solid rgba(148,163,184,0.35);"
                 return styles
 
             if len(display_df) > 5000:
