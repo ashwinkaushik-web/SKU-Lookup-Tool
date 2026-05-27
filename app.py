@@ -2116,7 +2116,7 @@ with inventory_tab:
                     if master in master_id_group_num:
                         # Even groups: slightly lighter; Odd groups: slightly darker (creates visible alternation)
                         if master_id_group_num[master] % 2 == 1:
-                            styles = ["background-color: rgba(148,163,184,0.05)"] * len(row)
+                            styles = ["background-color: rgba(148,163,184,0.12)"] * len(row)
                 # DNO red tint (overrides alternation)
                 if "DNO" in row.index:
                     if str(row.get("DNO", "")).strip().upper() == "TRUE":
