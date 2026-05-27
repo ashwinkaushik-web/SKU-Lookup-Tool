@@ -107,7 +107,7 @@ st.markdown("""
         flex-direction:column;
         justify-content:center;
     }
-    .inv-card .inv-card-label {font-size:12px;color:#7d8590;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;margin-bottom:8px;}
+    .inv-card .inv-card-label {font-size:14px;color:#7d8590;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;margin-bottom:8px;}
     .inv-card .inv-card-row {display:flex;justify-content:space-between;align-items:baseline;font-size:12px;padding:3px 0;}
     .inv-card .inv-card-row .ch {color:#94a3b8;font-weight:500;font-size:11px;}
     .inv-card .inv-card-row .v {font-weight:700;font-size:22px;color:#e6edf3;}
