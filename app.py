@@ -831,7 +831,7 @@ with fr_tab:
     st.caption("Validate listing attributes against Pattern's readiness rules. Paste identifiers, pick what to check, and get pass/fail per listing.")
     st.markdown("")
 
-    # ── INPUT CARD ──
+    # ── INPUT ──
     in_col1, in_col2 = st.columns([1, 4])
     with in_col1:
         fr_id_type = st.radio("ID Type", ["Listing ID", "SKU"], key="fr_id_type", label_visibility="collapsed")
@@ -842,7 +842,6 @@ with fr_tab:
             height=100, key="fr_text", label_visibility="collapsed",
         )
 
-    # Parse identifiers
     fr_ids = []
     if fr_text.strip():
         import re
@@ -945,7 +944,7 @@ with fr_tab:
         st.info("👆 Enter at least one identifier above to begin.")
 
     # ══════════════════════════════════════════════
-    # RESULTS — CARD VIEW
+    # RESULTS — TABLE VIEW + DRILLDOWN
     # ══════════════════════════════════════════════
     if "fr_results" in st.session_state and st.session_state["fr_results"]:
         results = st.session_state["fr_results"]
@@ -956,6 +955,7 @@ with fr_tab:
         attr_id_to_type = {a["id"]: a["type"] for a in FR_ATTRIBUTES}
 
         st.markdown("---")
+        st.markdown("##### Results")
 
         # Summary tiles
         total = len(results)
@@ -998,71 +998,118 @@ with fr_tab:
 
         st.caption(f"Showing **{len(shown)}** of **{total}** results")
 
-        # ── Listing cards ──
-        for idx, r in enumerate(shown):
-            card_class = "passed" if r["passed"] else "flagged"
-            status_class = "ok" if r["passed"] else "bad"
-            status_text = "✅ PASSED" if r["passed"] else f"⛔ FLAGGED · {r['red_count']} issue{'s' if r['red_count'] != 1 else ''}"
-
-            # Build attribute dots strip
-            dots_html = ""
-            for attr_id in attrs_at_run:
-                det = r["details"].get(attr_id, {})
-                status = det.get("status", "n")
-                # Skip info-only on the dot strip (less visual noise)
-                if attr_id_to_type.get(attr_id) == "info":
-                    continue
-                icon = {"g": "✓", "r": "✕", "i": "·"}.get(status, "·")
-                lbl = attr_id_to_label.get(attr_id, attr_id)
-                tooltip = f"{lbl}: {det.get('text', '')}"
-                # Use html escape for tooltip
-                tooltip_escaped = tooltip.replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
-                dots_html += f'<span class="fr-attr-dot {status}" title="{tooltip_escaped}">{icon}</span>'
-
-            # Card header
-            product_name = str(r["product_name"])[:80] if r["product_name"] else "(no product name)"
-            card_html = f'''
-            <div class="fr-card {card_class}">
-                <div class="fr-card-head">
-                    <div>
-                        <div class="fr-card-title">{product_name}</div>
-                        <div class="fr-card-meta"><b>{r["listing_id"]}</b> • {r["sku"] or "—"} • {r["marketplace"] or "—"} • {r["country_code"] or "—"} • {r["vendor"] or "—"}</div>
-                    </div>
-                    <div class="fr-card-status">
-                        <div class="fr-attr-strip">{dots_html}</div>
-                        <div class="fr-status-pill {status_class}">{status_text}</div>
-                    </div>
-                </div>
-            </div>
-            '''
-            st.markdown(card_html, unsafe_allow_html=True)
-
-            # Streamlit expander for details (below the card)
-            with st.expander(f"🔍 View details for {r['listing_id']}", expanded=False):
-                # Build attribute grid
-                attr_rows_html = '<div class="fr-attr-grid">'
+        # ── TABLE VIEW ──
+        if shown:
+            display_rows = []
+            for r in shown:
+                row_data = {
+                    "Listing ID": r["listing_id"],
+                    "SKU": r["sku"] or "—",
+                    "Product Name": str(r["product_name"])[:60] if r["product_name"] else "—",
+                    "Marketplace": r["marketplace"] or "—",
+                    "Country": r["country_code"] or "—",
+                    "Vendor": r["vendor"] or "—",
+                    "Status": "✅ Passed" if r["passed"] else f"⛔ Flagged ({r['red_count']})",
+                }
+                # Add each attribute's status with icon + value
                 for attr_id in attrs_at_run:
+                    attr_label = attr_id_to_label.get(attr_id, attr_id)
                     det = r["details"].get(attr_id, {})
                     status = det.get("status", "n")
-                    mark = {"g": "✅", "r": "⛔", "i": "ℹ️", "n": "—"}.get(status, "—")
-                    lbl = attr_id_to_label.get(attr_id, attr_id)
-                    val = det.get("value", "") or "—"
-                    note = det.get("text", "")
-                    # Show note if it adds info beyond the value
-                    display_val = val if note == val or note in ("Active ✓", "Shipable ✓", "Not DNO ✓") else f"{val} — {note}"
-                    if status == "i":
-                        display_val = val
-                    display_val_escaped = str(display_val).replace("<", "&lt;").replace(">", "&gt;")
-                    lbl_escaped = lbl.replace("<", "&lt;").replace(">", "&gt;")
-                    attr_rows_html += f'''
-                    <div class="fr-attr-row {status}">
-                        <span class="mk">{mark}</span>
-                        <span class="nm">{lbl_escaped}</span>
-                        <span class="vl">{display_val_escaped}</span>
-                    </div>
-                    '''
-                attr_rows_html += '</div>'
-                st.markdown(attr_rows_html, unsafe_allow_html=True)
+                    icon = {"g": "✅", "r": "⛔", "i": "ℹ️", "n": "—"}.get(status, "—")
+                    value = det.get("value", "") or "—"
+                    row_data[attr_label] = f"{icon} {value}"
+                display_rows.append(row_data)
+
+            display_fr_df = pd.DataFrame(display_rows)
+
+            def fr_color_rows(row):
+                if "Status" in row.index and "Flagged" in str(row.get("Status", "")):
+                    return ["background-color: rgba(239,68,68,0.10)"] * len(row)
+                if "Status" in row.index and "Passed" in str(row.get("Status", "")):
+                    return ["background-color: rgba(34,197,94,0.05)"] * len(row)
+                return [""] * len(row)
+
+            if len(display_fr_df) > 5000:
+                st.info(f"📊 Showing {len(display_fr_df):,} rows — row coloring disabled for performance.")
+                st.dataframe(display_fr_df, use_container_width=True, hide_index=True, height=600)
+            else:
+                st.dataframe(
+                    display_fr_df.style.apply(fr_color_rows, axis=1),
+                    use_container_width=True, hide_index=True,
+                    height=min(len(display_fr_df) * 38 + 40, 600),
+                )
+
+        # ── DRILL-DOWN ──
+        st.markdown("")
+        st.markdown("##### 🔍 Drill Down")
+        st.caption("Pick a listing below to see the full attribute breakdown with status, value, and notes.")
+
+        if shown:
+            drill_options = ["— Select a listing —"] + [
+                f"{r['listing_id']} • {r['sku'] or '—'} • {str(r['product_name'])[:50] if r['product_name'] else 'No name'}"
+                for r in shown
+            ]
+            drill_choice = st.selectbox("Listing", drill_options, key="fr_drill", label_visibility="collapsed")
+
+            if drill_choice and drill_choice != "— Select a listing —":
+                drill_idx = drill_options.index(drill_choice) - 1
+                drill = shown[drill_idx]
+
+                # Header bar with summary
+                status_color = "rgba(34,197,94,0.15)" if drill["passed"] else "rgba(239,68,68,0.15)"
+                status_text = "✅ PASSED — All checks succeeded" if drill["passed"] else f"⛔ FLAGGED — {drill['red_count']} issue(s) need attention"
+                st.markdown(
+                    f'<div style="background:{status_color};border-radius:8px;padding:14px 18px;margin-bottom:12px;">'
+                    f'<div style="font-size:13px;font-weight:600;margin-bottom:4px;">{drill["product_name"] or "(no product name)"}</div>'
+                    f'<div style="font-size:11px;font-family:monospace;color:#94a3b8;">'
+                    f'<b style="color:#c9d1d9;">{drill["listing_id"]}</b> • {drill["sku"] or "—"} • '
+                    f'{drill["marketplace"] or "—"} • {drill["country_code"] or "—"} • {drill["vendor"] or "—"}'
+                    f'</div>'
+                    f'<div style="font-size:13px;font-weight:600;margin-top:8px;">{status_text}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+                # Build detail table — split into two columns: checks first, then info
+                check_rows = []
+                info_rows = []
+                for attr_id in attrs_at_run:
+                    det = drill["details"].get(attr_id, {})
+                    status = det.get("status", "n")
+                    icon = {"g": "✅ Pass", "r": "⛔ Fail", "i": "ℹ️ Info", "n": "—"}.get(status, "—")
+                    attr_label = attr_id_to_label.get(attr_id, attr_id)
+                    row = {
+                        "Attribute": attr_label,
+                        "Value": det.get("value", "") or "—",
+                        "Status": icon,
+                        "Note": det.get("text", "") or "—",
+                    }
+                    if attr_id_to_type.get(attr_id) == "info":
+                        info_rows.append(row)
+                    else:
+                        check_rows.append(row)
+
+                if check_rows:
+                    st.markdown("**Checks**")
+                    check_df = pd.DataFrame(check_rows)
+
+                    def detail_color(row):
+                        if "Fail" in str(row.get("Status", "")):
+                            return ["background-color: rgba(239,68,68,0.10)"] * len(row)
+                        if "Pass" in str(row.get("Status", "")):
+                            return ["background-color: rgba(34,197,94,0.05)"] * len(row)
+                        return [""] * len(row)
+
+                    st.dataframe(
+                        check_df.style.apply(detail_color, axis=1),
+                        use_container_width=True, hide_index=True,
+                    )
+
+                if info_rows:
+                    st.markdown("**Info**")
+                    info_df = pd.DataFrame(info_rows)
+                    st.dataframe(info_df, use_container_width=True, hide_index=True)
 
         # ── Exports ──
         st.markdown("")
