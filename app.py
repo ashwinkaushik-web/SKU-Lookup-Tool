@@ -100,22 +100,22 @@ st.markdown("""
         background:#161b22;
         border:1px solid #30363d;
         border-radius:10px;
-        padding:12px 14px;
+        padding:14px 16px;
         height:100%;
-        min-height:90px;
+        min-height:110px;
         display:flex;
         flex-direction:column;
         justify-content:center;
     }
-    .inv-card .inv-card-label {font-size:10px;color:#7d8590;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;margin-bottom:6px;}
+    .inv-card .inv-card-label {font-size:12px;color:#7d8590;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;margin-bottom:8px;}
     .inv-card .inv-card-row {display:flex;justify-content:space-between;align-items:baseline;font-size:12px;padding:3px 0;}
-    .inv-card .inv-card-row .ch {color:#94a3b8;font-weight:500;font-size:10px;}
-    .inv-card .inv-card-row .v {font-weight:700;font-size:18px;color:#e6edf3;}
+    .inv-card .inv-card-row .ch {color:#94a3b8;font-weight:500;font-size:11px;}
+    .inv-card .inv-card-row .v {font-weight:700;font-size:22px;color:#e6edf3;}
     .inv-card .inv-card-row .v.pfs {color:#ec4899;}
     .inv-card .inv-card-row .v.fba {color:#f59e0b;}
-    .inv-card .inv-card-row .v.master {color:#a855f7;font-size:28px;}
+    .inv-card .inv-card-row .v.master {color:#a855f7;font-size:36px;}
     .inv-card .inv-card-row .v.dno {color:#f85149;}
-    .inv-card .inv-card-row .v.muted {color:#525965;font-weight:500;font-size:14px;}
+    .inv-card .inv-card-row .v.muted {color:#525965;font-weight:500;font-size:16px;}
     .inv-card.clickable {cursor:pointer;transition:border-color 0.15s, background 0.15s;}
     .inv-card.clickable:hover {border-color:#58a6ff;background:rgba(59,130,246,0.05);}
     .inv-card.active {border-color:#58a6ff;background:rgba(59,130,246,0.10);}
@@ -1875,17 +1875,11 @@ with inventory_tab:
         sum_oo_pfs = split_sum(inv_df_full, "ON_ORDER", network_filter="Pattern PFS")
         sum_oo_fba = split_sum(inv_df_full, "ON_ORDER", network_filter="Amazon FBA")
 
-        # Active clickable filter state
-        if "inv_card_filter" not in st.session_state:
-            st.session_state["inv_card_filter"] = None  # None / "dno" / "unfulfillable" / "negative_actual"
-
-        def render_card_dual(label, pfs_val, fba_val=None, color_class="", clickable_id=None):
+        def render_card_dual(label, pfs_val, fba_val=None, color_class=""):
             """Render a card with PFS / FBA split (or just one value if fba_val is None)."""
-            is_active = clickable_id is not None and st.session_state.get("inv_card_filter") == clickable_id
-            card_extra_class = f" active" if is_active else ""
-            html = f'<div class="inv-card{card_extra_class}"><div class="inv-card-label">{label}</div>'
+            html = f'<div class="inv-card"><div class="inv-card-label">{label}</div>'
             if fba_val is None:
-                # Single value (e.g., Master IDs, DNO, Actual Available, Pattern WH Reserved)
+                # Single value (e.g., Master IDs)
                 v_class = color_class or "v"
                 html += f'<div class="inv-card-row"><span class="ch"></span><span class="v {v_class}">{pfs_val:,}</span></div>'
             else:
@@ -1905,21 +1899,9 @@ with inventory_tab:
         with r1c2:
             st.markdown(render_card_dual("Fulfillable", sum_fulfillable_pfs, sum_fulfillable_fba), unsafe_allow_html=True)
         with r1c3:
-            is_unf_active = st.session_state.get("inv_card_filter") == "unfulfillable"
             st.markdown(render_card_dual("Unfulfillable", sum_unfulfillable_pfs, sum_unfulfillable_fba), unsafe_allow_html=True)
-            unf_label = "🟢 Unfulfillable filter ON" if is_unf_active else "Click to filter > 0"
-            if st.button(unf_label, key="inv_card_unf_btn", use_container_width=True,
-                         type="primary" if is_unf_active else "secondary"):
-                st.session_state["inv_card_filter"] = None if is_unf_active else "unfulfillable"
-                st.rerun()
         with r1c4:
-            is_neg_active = st.session_state.get("inv_card_filter") == "negative_actual"
             st.markdown(render_card_dual("Actual Available", sum_actual_pfs, "—"), unsafe_allow_html=True)
-            neg_label = "🟢 Negative filter ON" if is_neg_active else "Click to filter < 0"
-            if st.button(neg_label, key="inv_card_neg_btn", use_container_width=True,
-                         type="primary" if is_neg_active else "secondary"):
-                st.session_state["inv_card_filter"] = None if is_neg_active else "negative_actual"
-                st.rerun()
 
         # Row 2: Pattern WH Reserved · Fulfillment Channel Units · Inbound · On Order
         r2c1, r2c2, r2c3, r2c4 = st.columns(4)
@@ -1996,15 +1978,6 @@ with inventory_tab:
             term = inv_search.strip().lower()
             mask = inv_filtered.astype(str).apply(lambda r: term in " ".join(r.values).lower(), axis=1)
             inv_filtered = inv_filtered[mask]
-
-        # Apply click-from-summary-card filters
-        card_filter = st.session_state.get("inv_card_filter")
-        if card_filter == "unfulfillable":
-            if "UNFULFILLABLE" in inv_filtered.columns:
-                inv_filtered = inv_filtered[inv_filtered["UNFULFILLABLE"].fillna(0) > 0]
-        elif card_filter == "negative_actual":
-            if "ACTUAL_AVAILABLE_QTY" in inv_filtered.columns:
-                inv_filtered = inv_filtered[inv_filtered["ACTUAL_AVAILABLE_QTY"].fillna(0) < 0]
 
         # ── COLUMN VISIBILITY (Presets + Group toggles + Fine control) ──
         with st.expander("⚙️ Customize Columns", expanded=False):
