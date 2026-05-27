@@ -94,6 +94,21 @@ st.markdown("""
     .fr-attr-row .nm {flex:1;font-size:12px;color:#c9d1d9;font-weight:500;}
     .fr-attr-row .vl {font-family:monospace;font-size:11px;color:#7d8590;}
     .fr-attr-row .mk {font-size:13px;}
+
+    /* ── Inventory Summary Cards (2-row layout, PFS/FBA split) ── */
+    .inv-card {background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px 14px;height:100%;}
+    .inv-card .inv-card-label {font-size:10px;color:#7d8590;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;margin-bottom:6px;}
+    .inv-card .inv-card-row {display:flex;justify-content:space-between;align-items:baseline;font-size:12px;padding:2px 0;}
+    .inv-card .inv-card-row .ch {color:#94a3b8;font-weight:500;font-size:10px;}
+    .inv-card .inv-card-row .v {font-weight:700;font-size:18px;color:#e6edf3;}
+    .inv-card .inv-card-row .v.pfs {color:#ec4899;}
+    .inv-card .inv-card-row .v.fba {color:#f59e0b;}
+    .inv-card .inv-card-row .v.master {color:#a855f7;}
+    .inv-card .inv-card-row .v.dno {color:#f85149;}
+    .inv-card .inv-card-row .v.muted {color:#525965;font-weight:500;font-size:14px;}
+    .inv-card.clickable {cursor:pointer;transition:border-color 0.15s, background 0.15s;}
+    .inv-card.clickable:hover {border-color:#58a6ff;background:rgba(59,130,246,0.05);}
+    .inv-card.active {border-color:#58a6ff;background:rgba(59,130,246,0.10);}
 </style>
 """, unsafe_allow_html=True)
 
@@ -560,6 +575,277 @@ def run_fr_check(df, selected_attrs):
     return results
 
 
+# ══════════════════════════════════════════════
+# Inventory Lookup — query & helpers
+# ══════════════════════════════════════════════
+INVENTORY_QUERY_TEMPLATE = """
+WITH warehouse_stock AS (
+  SELECT
+    MAX(DATE)                AS SNAPSHOT_DATE,
+    WAREHOUSE_NAME,
+    MASTER_ID,
+    MAX(PART_NUMBER_FINAL)   AS PART_NUMBER_FINAL,
+    MAX(TITLE)               AS WAREHOUSE_TITLE,
+    MAX(BRAND)               AS BRAND,
+    SUM(QUANTITY)            AS STOW_PICKABLE_QTY
+  FROM "ANALYTICS_DB"."REPORTING"."REPORT__WAREHOUSE_INVENTORY_BY_PRODUCT_CURRENT"
+  WHERE MASTER_ID IN ({master_ids})
+    AND warehouse_name IN ('Northampton', 'Wroclaw')
+    AND status = 'Sellable'
+    AND area IN ('A-MOD', 'Cage', 'F-MOD', 'B-Mod', 'BIO', 'OVERAGE', 'Shelving')
+  GROUP BY WAREHOUSE_NAME, MASTER_ID
+),
+inventory_hub AS (
+  SELECT
+    PART_NUMBER, MASTER_ID, ASIN, ASIN_LIST,
+    TITLE AS HUB_TITLE, VENDOR, REGION, INVENTORY_POOL, FULFILLMENT_NETWORK,
+    INVENTORY_TYPE, BUNDLE_TYPE, DNO_STATUS, WHOLESALE_PRICE_USD,
+    FULFILLABLE, WAREHOUSE_TRANSFER, WAREHOUSE_RESERVED, UNFULFILLABLE,
+    OUTBOUND_RESERVED, INBOUND,
+    PATTERN_WAREHOUSE_RESERVED_FOR_MARKETPLACE,
+    PATTERN_OUTBOUND_RESERVED_FOR_MARKETPLACE,
+    PATTERN_WAREHOUSE_TRANSFER_FOR_MARKETPLACE,
+    ON_ORDER, PATTERN_ON_ORDER_RESERVED_FOR_MARKETPLACE,
+    FULFILLMENT_CHANNEL_UNITS,
+    FULFILLMENT_CHANNEL_UNITS_3PL,
+    FULFILLMENT_CHANNEL_UNITS_PATTERN_OWNED,
+    PIPELINE_UNITS,
+    PIPELINE_UNITS_3PL,
+    PIPELINE_UNITS_PATTERN_OWNED,
+    FULFILLABLE_VALUE_USD, UNFULFILLABLE_VALUE_USD,
+    OUTBOUND_RESERVED_VALUE_USD, INBOUND_VALUE_USD,
+    WAREHOUSE_RESERVED_VALUE_USD, WAREHOUSE_TRANSFER_VALUE_USD,
+    PATTERN_WAREHOUSE_RESERVED_FOR_MARKETPLACE_VALUE_USD,
+    PATTERN_OUTBOUND_RESERVED_FOR_MARKETPLACE_VALUE_USD,
+    PATTERN_WAREHOUSE_TRANSFER_FOR_MARKETPLACE_VALUE_USD,
+    ON_ORDER_VALUE_USD, PATTERN_ON_ORDER_RESERVED_FOR_MARKETPLACE_VALUE_USD,
+    FULFILLMENT_CHANNEL_VALUE_USD_PATTERN_OWNED,
+    PIPELINE_VALUE_USD_PATTERN_OWNED,
+    FULFILLABLE_WOS,
+    WAREHOUSE_TRANSFER_WOS,
+    FULFILLMENT_CHANNEL_UNITS_PATTERN_OWNED_WOS,
+    FULFILLMENT_CHANNEL_UNITS_PATTERN_OWNED_WOS_DEFAULT_FCST,
+    PIPELINE_UNITS_PATTERN_OWNED_WOS,
+    PIPELINE_UNITS_PATTERN_OWNED_WOS_DEFAULT_FCST
+  FROM PATTERN_DB.OPERATIONS.INVENTORY_HUB_NORMALIZED_INVENTORY_ITEMS
+  WHERE MASTER_ID IN ({master_ids})
+    AND REGION IN ('GB', 'EU')
+    AND FULFILLMENT_NETWORK IN ('Pattern PFS', 'Amazon FBA')
+),
+warehouse_pivot AS (
+  SELECT
+    MASTER_ID,
+    MAX(SNAPSHOT_DATE) AS SNAPSHOT_DATE,
+    MAX(PART_NUMBER_FINAL) AS PART_NUMBER_FINAL,
+    MAX(WAREHOUSE_TITLE) AS WAREHOUSE_TITLE,
+    MAX(BRAND) AS BRAND,
+    SUM(CASE WHEN WAREHOUSE_NAME = 'Northampton' THEN STOW_PICKABLE_QTY END) AS NORTHAMPTON_STOW_PICKABLE_QTY,
+    SUM(CASE WHEN WAREHOUSE_NAME = 'Wroclaw' THEN STOW_PICKABLE_QTY END) AS WROCLAW_STOW_PICKABLE_QTY
+  FROM warehouse_stock
+  GROUP BY MASTER_ID
+),
+hub_reserved_pfs_by_region AS (
+  SELECT
+    MASTER_ID,
+    SUM(CASE WHEN REGION = 'GB' AND FULFILLMENT_NETWORK = 'Pattern PFS'
+             THEN PATTERN_WAREHOUSE_RESERVED_FOR_MARKETPLACE END) AS GB_PFS_PATTERN_WH_RESERVED,
+    SUM(CASE WHEN REGION = 'EU' AND FULFILLMENT_NETWORK = 'Pattern PFS'
+             THEN PATTERN_WAREHOUSE_RESERVED_FOR_MARKETPLACE END) AS EU_PFS_PATTERN_WH_RESERVED
+  FROM inventory_hub
+  GROUP BY MASTER_ID
+)
+SELECT
+  COALESCE(ih.MASTER_ID, wp.MASTER_ID) AS MASTER_ID,
+  ih.PART_NUMBER, wp.PART_NUMBER_FINAL,
+  ih.ASIN, ih.ASIN_LIST, ih.HUB_TITLE AS TITLE,
+  wp.BRAND, ih.VENDOR, wp.SNAPSHOT_DATE,
+  ih.REGION, ih.INVENTORY_POOL, ih.FULFILLMENT_NETWORK,
+  ih.INVENTORY_TYPE, ih.BUNDLE_TYPE, ih.DNO_STATUS,
+  ih.WHOLESALE_PRICE_USD,
+  -- Core block (region-aware unified columns)
+  ih.FULFILLABLE,
+  CASE
+    WHEN ih.REGION = 'GB' THEN wp.NORTHAMPTON_STOW_PICKABLE_QTY
+    WHEN ih.REGION = 'EU' THEN wp.WROCLAW_STOW_PICKABLE_QTY
+  END AS STOW_PICKABLE_QTY,
+  CASE
+    WHEN ih.REGION = 'GB' THEN hr.GB_PFS_PATTERN_WH_RESERVED
+    WHEN ih.REGION = 'EU' THEN hr.EU_PFS_PATTERN_WH_RESERVED
+  END AS PFS_RESERVED,
+  CASE
+    WHEN ih.REGION = 'GB' THEN COALESCE(wp.NORTHAMPTON_STOW_PICKABLE_QTY, 0) - COALESCE(hr.GB_PFS_PATTERN_WH_RESERVED, 0)
+    WHEN ih.REGION = 'EU' THEN COALESCE(wp.WROCLAW_STOW_PICKABLE_QTY, 0) - COALESCE(hr.EU_PFS_PATTERN_WH_RESERVED, 0)
+  END AS ACTUAL_AVAILABLE_QTY,
+  ih.UNFULFILLABLE,
+  -- Secondary metrics
+  ih.INBOUND, ih.ON_ORDER, ih.WAREHOUSE_RESERVED, ih.OUTBOUND_RESERVED,
+  ih.WAREHOUSE_TRANSFER,
+  ih.PATTERN_WAREHOUSE_RESERVED_FOR_MARKETPLACE,
+  ih.PATTERN_OUTBOUND_RESERVED_FOR_MARKETPLACE,
+  ih.PATTERN_WAREHOUSE_TRANSFER_FOR_MARKETPLACE,
+  ih.PATTERN_ON_ORDER_RESERVED_FOR_MARKETPLACE,
+  ih.FULFILLMENT_CHANNEL_UNITS,
+  ih.FULFILLMENT_CHANNEL_UNITS_3PL,
+  ih.FULFILLMENT_CHANNEL_UNITS_PATTERN_OWNED,
+  ih.PIPELINE_UNITS,
+  ih.PIPELINE_UNITS_3PL,
+  ih.PIPELINE_UNITS_PATTERN_OWNED,
+  -- WOS columns (hidden by default)
+  ih.FULFILLABLE_WOS,
+  ih.WAREHOUSE_TRANSFER_WOS,
+  ih.FULFILLMENT_CHANNEL_UNITS_PATTERN_OWNED_WOS,
+  ih.FULFILLMENT_CHANNEL_UNITS_PATTERN_OWNED_WOS_DEFAULT_FCST,
+  ih.PIPELINE_UNITS_PATTERN_OWNED_WOS,
+  ih.PIPELINE_UNITS_PATTERN_OWNED_WOS_DEFAULT_FCST,
+  -- Per-warehouse breakouts (hidden by default)
+  wp.NORTHAMPTON_STOW_PICKABLE_QTY,
+  wp.WROCLAW_STOW_PICKABLE_QTY,
+  hr.GB_PFS_PATTERN_WH_RESERVED,
+  hr.EU_PFS_PATTERN_WH_RESERVED,
+  -- USD values (hidden by default)
+  ih.FULFILLABLE_VALUE_USD, ih.UNFULFILLABLE_VALUE_USD,
+  ih.OUTBOUND_RESERVED_VALUE_USD, ih.INBOUND_VALUE_USD,
+  ih.WAREHOUSE_RESERVED_VALUE_USD, ih.WAREHOUSE_TRANSFER_VALUE_USD,
+  ih.PATTERN_WAREHOUSE_RESERVED_FOR_MARKETPLACE_VALUE_USD,
+  ih.PATTERN_OUTBOUND_RESERVED_FOR_MARKETPLACE_VALUE_USD,
+  ih.PATTERN_WAREHOUSE_TRANSFER_FOR_MARKETPLACE_VALUE_USD,
+  ih.ON_ORDER_VALUE_USD, ih.PATTERN_ON_ORDER_RESERVED_FOR_MARKETPLACE_VALUE_USD,
+  ih.FULFILLMENT_CHANNEL_VALUE_USD_PATTERN_OWNED,
+  ih.PIPELINE_VALUE_USD_PATTERN_OWNED
+FROM inventory_hub ih
+FULL OUTER JOIN warehouse_pivot wp ON ih.MASTER_ID = wp.MASTER_ID
+LEFT JOIN hub_reserved_pfs_by_region hr ON COALESCE(ih.MASTER_ID, wp.MASTER_ID) = hr.MASTER_ID
+ORDER BY MASTER_ID, ih.REGION, ih.FULFILLMENT_NETWORK
+"""
+
+
+def build_inventory_query(master_ids):
+    """Build inventory query for given master IDs."""
+    def safe(s): return s.strip().replace("'", "''")
+    quoted = ", ".join(f"'{safe(m)}'" for m in master_ids if m.strip())
+    return INVENTORY_QUERY_TEMPLATE.format(master_ids=quoted).strip()
+
+
+def run_inventory_lookup(master_ids):
+    """Run the inventory query for a list of master IDs."""
+    conn = get_connection()
+    return pd.read_sql(build_inventory_query(master_ids), conn)
+
+
+def resolve_listing_to_master(listing_ids):
+    """Resolve Listing IDs (and any other PC catalog identifier) to Master IDs."""
+    if not listing_ids:
+        return {}
+    def safe(s): return s.strip().replace("'", "''")
+    upper_list = ", ".join(f"UPPER('{safe(lid)}')" for lid in listing_ids if lid.strip())
+    query = f"""
+SELECT DISTINCT
+    UPPER(a.LISTING_ID) AS LISTING_ID,
+    b.MASTER_ID AS MASTER_ID
+FROM ANALYTICS_DB.STG_CATALOG.STG_CATALOG__LISTINGS a
+LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__PRODUCTS b ON b.ID = a.PRODUCT_ID
+WHERE (UPPER(a.LISTING_ID) IN ({upper_list})
+   OR UPPER(a.Listing_MP_Primary_ID) IN ({upper_list})
+   OR UPPER(a.LISTING_MP_PAGE_ID) IN ({upper_list})
+   OR UPPER(a.LISTING_MP_SECONDARY_ID) IN ({upper_list}))
+  AND b.MASTER_ID IS NOT NULL
+"""
+    conn = get_connection()
+    df = pd.read_sql(query, conn)
+    return dict(zip(df["LISTING_ID"], df["MASTER_ID"]))
+
+
+def get_brand_master_ids(brand_name, limit=None):
+    """Get master IDs for a brand (case-insensitive, matches against BRAND or VENDOR)."""
+    def safe(s): return s.strip().replace("'", "''")
+    limit_clause = f"LIMIT {int(limit)}" if limit else ""
+    # Note: inventory_hub doesn't have BRAND col, but the warehouse stock table does.
+    # We use VENDOR from the hub since that's what's available there.
+    query = f"""
+SELECT DISTINCT MASTER_ID
+FROM PATTERN_DB.OPERATIONS.INVENTORY_HUB_NORMALIZED_INVENTORY_ITEMS
+WHERE UPPER(VENDOR) = UPPER('{safe(brand_name)}')
+  AND REGION IN ('GB', 'EU')
+  AND MASTER_ID IS NOT NULL
+{limit_clause}
+"""
+    conn = get_connection()
+    df = pd.read_sql(query, conn)
+    return df["MASTER_ID"].tolist()
+
+
+# Inventory column metadata
+INVENTORY_COLUMNS = [
+    # ── Identifiers ──
+    {"key": "MASTER_ID",            "label": "Master ID",              "default": True,  "type": "str", "group": "Identifiers", "desc": "Pattern's internal product identifier"},
+    {"key": "PART_NUMBER",          "label": "Part Number",            "default": True,  "type": "str", "group": "Identifiers", "desc": "Vendor-provided SKU"},
+    {"key": "PART_NUMBER_FINAL",    "label": "Part Number (WH)",       "default": False, "type": "str", "group": "Identifiers", "desc": "Final part number used in warehouse systems"},
+    {"key": "ASIN",                 "label": "ASIN",                   "default": True,  "type": "str", "group": "Identifiers", "desc": "Amazon Standard Identification Number"},
+    {"key": "ASIN_LIST",            "label": "ASIN List",              "default": False, "type": "str", "group": "Identifiers", "desc": "All ASINs linked to this Master ID"},
+    {"key": "TITLE",                "label": "Title",                  "default": True,  "type": "str", "group": "Identifiers", "desc": "Product title"},
+    {"key": "BRAND",                "label": "Brand",                  "default": True,  "type": "str", "group": "Identifiers", "desc": "Brand name (from warehouse)"},
+    {"key": "VENDOR",               "label": "Vendor",                 "default": True,  "type": "str", "group": "Identifiers", "desc": "Vendor name (from Inventory Hub)"},
+    {"key": "SNAPSHOT_DATE",        "label": "As of",                  "default": False, "type": "str", "group": "Identifiers", "desc": "Date this inventory snapshot was taken"},
+    # ── Categorization ──
+    {"key": "REGION",               "label": "Region",                 "default": True,  "type": "str", "group": "Categorization", "desc": "GB (UK / Northampton) or EU (Wroclaw)"},
+    {"key": "INVENTORY_POOL",       "label": "Inventory Pool",         "default": True,  "type": "str", "group": "Categorization", "desc": "Specific marketplace/pool (e.g., Amazon DE, Pattern GB)"},
+    {"key": "FULFILLMENT_NETWORK",  "label": "Network",                "default": True,  "type": "str", "group": "Categorization", "desc": "Pattern PFS or Amazon FBA"},
+    {"key": "INVENTORY_TYPE",       "label": "Inventory Type",         "default": False, "type": "str", "group": "Categorization", "desc": "e.g., Pattern Owned"},
+    {"key": "BUNDLE_TYPE",          "label": "Bundle Type",            "default": False, "type": "str", "group": "Categorization", "desc": "e.g., Single, Bundle"},
+    {"key": "DNO_STATUS",           "label": "DNO",                    "default": True,  "type": "str", "group": "Categorization", "desc": "Do-Not-Order flag"},
+    {"key": "WHOLESALE_PRICE_USD",  "label": "Wholesale (USD)",        "default": False, "type": "num", "group": "Categorization", "desc": "Wholesale cost in USD"},
+    # ── Core Inventory (region-aware) ──
+    {"key": "FULFILLABLE",          "label": "Fulfillable",            "default": True,  "type": "num", "group": "Core", "desc": "Units ready to ship at Amazon / Pattern / Marketplace"},
+    {"key": "STOW_PICKABLE_QTY",    "label": "Stow Pickable",          "default": True,  "type": "num", "group": "Core", "desc": "Units in our warehouse, sellable, in pickable areas (region-aware: NH for GB, WR for EU)"},
+    {"key": "PFS_RESERVED",         "label": "PFS Reserved",           "default": True,  "type": "num", "group": "Core", "desc": "Units in our warehouse already reserved for PFS orders"},
+    {"key": "ACTUAL_AVAILABLE_QTY", "label": "Actual Available",       "default": True,  "type": "num", "group": "Core", "desc": "Stow Pickable − PFS Reserved (true free stock in our warehouse)"},
+    {"key": "UNFULFILLABLE",        "label": "Unfulfillable",          "default": True,  "type": "num", "group": "Core", "desc": "Units that can't be sold (de-listed, returns, damaged…)"},
+    # ── Movement & Pipeline ──
+    {"key": "INBOUND",              "label": "Inbound",                "default": True,  "type": "num", "group": "Movement", "desc": "Units inbounding to a marketplace"},
+    {"key": "ON_ORDER",             "label": "On Order",               "default": True,  "type": "num", "group": "Movement", "desc": "On Order with no work order — will go to STOW"},
+    {"key": "OUTBOUND_RESERVED",    "label": "Outbound Reserved",      "default": False, "type": "num", "group": "Movement", "desc": "Units reserved for sale"},
+    {"key": "WAREHOUSE_RESERVED",   "label": "WH Reserved",            "default": False, "type": "num", "group": "Movement", "desc": "At marketplace but reserved for sale"},
+    {"key": "WAREHOUSE_TRANSFER",   "label": "WH Transfer",            "default": False, "type": "num", "group": "Movement", "desc": "Units transferring between FBA warehouses"},
+    {"key": "PATTERN_WAREHOUSE_RESERVED_FOR_MARKETPLACE", "label": "Pattern WH Reserved (Mkt)", "default": False, "type": "num", "group": "Movement", "desc": "In Pattern WH but reserved to move to marketplace (Pick from STOW work order)"},
+    {"key": "PATTERN_OUTBOUND_RESERVED_FOR_MARKETPLACE", "label": "Pattern OB Reserved (Mkt)", "default": False, "type": "num", "group": "Movement", "desc": "In Pattern WH but moving out to a marketplace"},
+    {"key": "PATTERN_WAREHOUSE_TRANSFER_FOR_MARKETPLACE", "label": "Pattern WH Transfer (Mkt)", "default": False, "type": "num", "group": "Movement", "desc": "Pattern warehouse transfer earmarked for a specific marketplace"},
+    {"key": "PATTERN_ON_ORDER_RESERVED_FOR_MARKETPLACE", "label": "Pattern On Order Reserved (Mkt)", "default": False, "type": "num", "group": "Movement", "desc": "On order with a work order to go to a marketplace"},
+    # ── Totals (Channel + Pipeline) ──
+    {"key": "FULFILLMENT_CHANNEL_UNITS",                "label": "FC Units",               "default": False, "type": "num", "group": "Totals", "desc": "Total units excluding On Order & Unfulfillable"},
+    {"key": "FULFILLMENT_CHANNEL_UNITS_3PL",            "label": "FC Units (3PL)",         "default": False, "type": "num", "group": "Totals", "desc": "Channel units in 3PL stock (rare — only if Pattern holds 3PL stock)"},
+    {"key": "FULFILLMENT_CHANNEL_UNITS_PATTERN_OWNED",  "label": "FC Units (Pattern Owned)", "default": False, "type": "num", "group": "Totals", "desc": "Channel units that are Pattern-owned (excl. On Order & Unfulfillable)"},
+    {"key": "PIPELINE_UNITS",                           "label": "Pipeline Units",         "default": False, "type": "num", "group": "Totals", "desc": "Total units including On Order, excl. Unfulfillable"},
+    {"key": "PIPELINE_UNITS_3PL",                       "label": "Pipeline Units (3PL)",   "default": False, "type": "num", "group": "Totals", "desc": "Pipeline in 3PL stock (rare)"},
+    {"key": "PIPELINE_UNITS_PATTERN_OWNED",             "label": "Pipeline Units (Pattern Owned)", "default": False, "type": "num", "group": "Totals", "desc": "Pipeline units that are Pattern-owned"},
+    # ── Planning Metrics (Weeks of Supply — hidden by default) ──
+    {"key": "FULFILLABLE_WOS",                                       "label": "Fulfillable WOS",                 "default": False, "type": "num", "group": "Planning", "desc": "Weeks of Supply based on Fulfillable units"},
+    {"key": "WAREHOUSE_TRANSFER_WOS",                                "label": "WH Transfer WOS",                 "default": False, "type": "num", "group": "Planning", "desc": "Weeks of Supply based on Warehouse Transfer"},
+    {"key": "FULFILLMENT_CHANNEL_UNITS_PATTERN_OWNED_WOS",           "label": "FC WOS (Pattern Owned)",          "default": False, "type": "num", "group": "Planning", "desc": "Weeks of Supply on fulfillment channel (Pattern owned, actual sales)"},
+    {"key": "FULFILLMENT_CHANNEL_UNITS_PATTERN_OWNED_WOS_DEFAULT_FCST", "label": "FC WOS (Pattern Owned, Default Fcst)", "default": False, "type": "num", "group": "Planning", "desc": "Weeks of Supply on fulfillment channel (Pattern owned, default forecast)"},
+    {"key": "PIPELINE_UNITS_PATTERN_OWNED_WOS",                      "label": "Pipeline WOS (Pattern Owned)",    "default": False, "type": "num", "group": "Planning", "desc": "Weeks of Supply on pipeline (Pattern owned, actual sales)"},
+    {"key": "PIPELINE_UNITS_PATTERN_OWNED_WOS_DEFAULT_FCST",         "label": "Pipeline WOS (Pattern Owned, Default Fcst)", "default": False, "type": "num", "group": "Planning", "desc": "Weeks of Supply on pipeline (Pattern owned, default forecast)"},
+    # ── Per-warehouse Breakouts (hidden by default) ──
+    {"key": "NORTHAMPTON_STOW_PICKABLE_QTY", "label": "NH Stow Pickable",       "default": False, "type": "num", "group": "Warehouse Detail", "desc": "Northampton Stow Pickable units"},
+    {"key": "WROCLAW_STOW_PICKABLE_QTY",     "label": "WR Stow Pickable",       "default": False, "type": "num", "group": "Warehouse Detail", "desc": "Wroclaw Stow Pickable units"},
+    {"key": "GB_PFS_PATTERN_WH_RESERVED",    "label": "GB PFS Reserved",        "default": False, "type": "num", "group": "Warehouse Detail", "desc": "GB Pattern PFS warehouse reserved units"},
+    {"key": "EU_PFS_PATTERN_WH_RESERVED",    "label": "EU PFS Reserved",        "default": False, "type": "num", "group": "Warehouse Detail", "desc": "EU Pattern PFS warehouse reserved units"},
+    # ── USD Values (all hidden by default) ──
+    {"key": "FULFILLABLE_VALUE_USD",         "label": "Fulfillable $",          "default": False, "type": "num", "group": "USD", "desc": "Fulfillable units value in USD"},
+    {"key": "UNFULFILLABLE_VALUE_USD",       "label": "Unfulfillable $",        "default": False, "type": "num", "group": "USD", "desc": "Unfulfillable units value in USD"},
+    {"key": "INBOUND_VALUE_USD",             "label": "Inbound $",              "default": False, "type": "num", "group": "USD", "desc": "Inbound units value in USD"},
+    {"key": "ON_ORDER_VALUE_USD",            "label": "On Order $",             "default": False, "type": "num", "group": "USD", "desc": "On Order units value in USD"},
+    {"key": "OUTBOUND_RESERVED_VALUE_USD",   "label": "Outbound Reserved $",    "default": False, "type": "num", "group": "USD", "desc": "Outbound Reserved units value in USD"},
+    {"key": "WAREHOUSE_RESERVED_VALUE_USD",  "label": "WH Reserved $",          "default": False, "type": "num", "group": "USD", "desc": "Warehouse Reserved value in USD"},
+    {"key": "WAREHOUSE_TRANSFER_VALUE_USD",  "label": "WH Transfer $",          "default": False, "type": "num", "group": "USD", "desc": "Warehouse Transfer value in USD"},
+    {"key": "PATTERN_WAREHOUSE_RESERVED_FOR_MARKETPLACE_VALUE_USD", "label": "Pattern WH Reserved (Mkt) $", "default": False, "type": "num", "group": "USD", "desc": "Pattern WH Reserved for Marketplace value in USD"},
+    {"key": "PATTERN_OUTBOUND_RESERVED_FOR_MARKETPLACE_VALUE_USD",  "label": "Pattern OB Reserved (Mkt) $", "default": False, "type": "num", "group": "USD", "desc": "Pattern OB Reserved for Marketplace value in USD"},
+    {"key": "PATTERN_WAREHOUSE_TRANSFER_FOR_MARKETPLACE_VALUE_USD", "label": "Pattern WH Transfer (Mkt) $", "default": False, "type": "num", "group": "USD", "desc": "Pattern WH Transfer for Marketplace value in USD"},
+    {"key": "PATTERN_ON_ORDER_RESERVED_FOR_MARKETPLACE_VALUE_USD",  "label": "Pattern On Order Reserved (Mkt) $", "default": False, "type": "num", "group": "USD", "desc": "Pattern On Order Reserved for Marketplace value in USD"},
+    {"key": "FULFILLMENT_CHANNEL_VALUE_USD_PATTERN_OWNED",          "label": "FC Value (Owned) $",     "default": False, "type": "num", "group": "USD", "desc": "Fulfillment Channel value (Pattern owned) in USD"},
+    {"key": "PIPELINE_VALUE_USD_PATTERN_OWNED",                     "label": "Pipeline Value (Owned) $", "default": False, "type": "num", "group": "USD", "desc": "Pipeline value (Pattern owned) in USD"},
+]
+
+
 def multiselect_filter(df, column, label, key):
     unique_vals = sorted(df[column].dropna().unique().tolist())
     if not unique_vals:
@@ -687,7 +973,7 @@ REGION_MAP = {
 # ══════════════════════════════════════════════
 # Input + Results in tabs
 # ══════════════════════════════════════════════
-input_tab, brand_tab, fr_tab, results_tab = st.tabs(["🔍 Search by ID", "🏷️ Browse by Brand", "🔬 FR Check", "📊 Results"])
+input_tab, brand_tab, fr_tab, inventory_tab, results_tab = st.tabs(["🔍 Search by ID", "🏷️ Browse by Brand", "🔬 FR Check", "📦 Inventory", "📊 Results"])
 
 with input_tab:
     st.markdown("")
@@ -1223,6 +1509,743 @@ with fr_tab:
                 f"fr_check_{datetime.date.today().isoformat()}.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
+            )
+
+with inventory_tab:
+    st.markdown("")
+    st.markdown("### 📦 Inventory Lookup")
+    st.caption("Real-time stock levels from Northampton & Wroclaw warehouses, joined with the Inventory Hub. Search by Master ID, Listing ID, or Brand.")
+    st.markdown("")
+
+    # ── SEARCH MODE TOGGLE ──
+    if "inv_mode" not in st.session_state:
+        st.session_state["inv_mode"] = "ids"
+
+    mode_col1, mode_col2, _ = st.columns([1, 1, 4])
+    with mode_col1:
+        if st.button("🔍 Search by ID", type="primary" if st.session_state["inv_mode"] == "ids" else "secondary",
+                     use_container_width=True, key="inv_mode_ids"):
+            st.session_state["inv_mode"] = "ids"
+            st.rerun()
+    with mode_col2:
+        if st.button("🏷️ Browse by Brand", type="primary" if st.session_state["inv_mode"] == "brand" else "secondary",
+                     use_container_width=True, key="inv_mode_brand"):
+            st.session_state["inv_mode"] = "brand"
+            st.rerun()
+
+    st.markdown("")
+
+    inventory_master_ids = []
+    inv_run_triggered = False
+
+    if st.session_state["inv_mode"] == "ids":
+        # ── ID-BASED INPUT ──
+        st.markdown("**Paste identifiers** — Master IDs and/or Listing IDs (auto-resolved)")
+        inv_text = st.text_area(
+            "IDs",
+            placeholder="One per line, or comma/space separated\ne.g.\nP0M3SJXI\nL0NC2POW\nP0NEIWB5",
+            height=140, key="inv_text", label_visibility="collapsed",
+        )
+
+        # Parse input
+        raw_ids = []
+        if inv_text.strip():
+            import re
+            raw_ids = [s.strip() for s in re.split(r"[\n,\s\t]+", inv_text.strip()) if s.strip()]
+            seen = set()
+            raw_ids = [x for x in raw_ids if not (x in seen or seen.add(x))]
+        st.caption(f"**{len(raw_ids)}** identifier(s) entered • Max 500")
+
+        if raw_ids and len(raw_ids) > 500:
+            st.warning("⚠️ Max 500 identifiers. Only first 500 will be processed.")
+            raw_ids = raw_ids[:500]
+
+        st.markdown("")
+        if raw_ids:
+            if st.button(f"▶ Look Up Inventory for {len(raw_ids)} identifier(s)",
+                         type="primary", use_container_width=True, key="inv_run_ids"):
+                inv_run_triggered = True
+                progress_bar = st.progress(0, text="Connecting to Snowflake...")
+
+                try:
+                    # Step 1: Separate Master IDs from Listing IDs
+                    # Master IDs typically start with P0, Listing IDs with L0 (Pattern convention)
+                    likely_master = [r for r in raw_ids if r.upper().startswith("P0")]
+                    likely_listing = [r for r in raw_ids if r.upper().startswith("L0")]
+                    other = [r for r in raw_ids if not r.upper().startswith("P0") and not r.upper().startswith("L0")]
+
+                    # Treat "other" as potentially either — try resolving them
+                    listing_candidates = likely_listing + other
+
+                    resolved_masters = list(likely_master)
+                    resolution_map = {}
+
+                    if listing_candidates:
+                        progress_bar.progress(20, text=f"Resolving {len(listing_candidates)} Listing ID(s) to Master IDs...")
+                        try:
+                            resolution_map = resolve_listing_to_master(listing_candidates)
+                            resolved_masters.extend(resolution_map.values())
+                        except Exception as e:
+                            st.warning(f"Listing ID resolution had an issue: {e}. Continuing with Master IDs only.")
+
+                    # Dedupe
+                    resolved_masters = list({m for m in resolved_masters if m})
+
+                    if not resolved_masters:
+                        progress_bar.empty()
+                        st.error("No Master IDs could be resolved from your input. Please check the identifiers.")
+                    else:
+                        progress_bar.progress(50, text=f"Fetching inventory data for {len(resolved_masters)} Master ID(s)...")
+                        inv_df = run_inventory_lookup(resolved_masters)
+                        progress_bar.progress(100, text=f"Done — {len(inv_df)} row(s) found!")
+                        time.sleep(0.3)
+                        progress_bar.empty()
+
+                        if inv_df.empty:
+                            st.warning("No inventory data found for the given IDs.")
+                            st.session_state.pop("inv_df", None)
+                        else:
+                            st.session_state["inv_df"] = inv_df
+                            st.session_state["inv_input_master_ids"] = resolved_masters
+                            st.session_state["inv_resolution_map"] = resolution_map
+                            st.success(f"✅ Found **{len(inv_df)}** inventory row(s) across **{inv_df['MASTER_ID'].nunique()}** Master ID(s).")
+                            if resolution_map:
+                                st.info(f"🔗 Resolved {len(resolution_map)} Listing ID(s) to Master IDs.")
+                except Exception as e:
+                    progress_bar.empty()
+                    st.error(f"Inventory lookup failed: {e}")
+        else:
+            st.info("👆 Paste at least one Master ID or Listing ID to begin.")
+
+    else:
+        # ── BRAND-BASED INPUT ──
+        st.markdown("**Enter brand name** — case-insensitive, exact match")
+        b_col1, b_col2 = st.columns([3, 1])
+        with b_col1:
+            inv_brand = st.text_input("Brand", placeholder="e.g. The North Face, Patagonia, HEYDUDE",
+                                      key="inv_brand", label_visibility="collapsed")
+        with b_col2:
+            inv_brand_limit = st.selectbox("Max Results", [500, 1000, 2000, 5000, "No limit"],
+                                            index=0, key="inv_brand_limit", label_visibility="collapsed")
+
+        st.markdown("")
+        if inv_brand.strip():
+            if st.button(f"🏷️ Fetch Inventory for '{inv_brand.strip()}'",
+                         type="primary", use_container_width=True, key="inv_run_brand"):
+                inv_run_triggered = True
+                progress_bar = st.progress(0, text="Connecting to Snowflake...")
+
+                try:
+                    progress_bar.progress(20, text=f"Finding Master IDs for brand '{inv_brand.strip()}'...")
+                    limit = None if inv_brand_limit == "No limit" else int(inv_brand_limit)
+                    brand_masters = get_brand_master_ids(inv_brand.strip(), limit=limit)
+
+                    if not brand_masters:
+                        progress_bar.empty()
+                        st.warning(f"No Master IDs found for brand '{inv_brand.strip()}'. Check spelling — matching is case-insensitive but exact.")
+                        st.session_state.pop("inv_df", None)
+                    else:
+                        progress_bar.progress(50, text=f"Fetching inventory for {len(brand_masters)} Master ID(s)...")
+                        inv_df = run_inventory_lookup(brand_masters)
+                        progress_bar.progress(100, text=f"Done — {len(inv_df)} row(s) found!")
+                        time.sleep(0.3)
+                        progress_bar.empty()
+
+                        if inv_df.empty:
+                            st.warning(f"No inventory rows found for '{inv_brand.strip()}' in the configured pools (Pattern PFS / Amazon FBA in GB/EU).")
+                            st.session_state.pop("inv_df", None)
+                        else:
+                            st.session_state["inv_df"] = inv_df
+                            st.session_state["inv_input_master_ids"] = brand_masters
+                            st.session_state["inv_resolution_map"] = {}
+                            st.success(f"✅ Found **{len(inv_df)}** inventory row(s) for **'{inv_brand.strip()}'** across **{inv_df['MASTER_ID'].nunique()}** Master ID(s).")
+                except Exception as e:
+                    progress_bar.empty()
+                    st.error(f"Brand lookup failed: {e}")
+        else:
+            st.info("👆 Enter a brand name to begin.")
+
+    # ══════════════════════════════════════════════
+    # RESULTS DISPLAY
+    # ══════════════════════════════════════════════
+    if "inv_df" in st.session_state and not st.session_state["inv_df"].empty:
+        inv_df_full = st.session_state["inv_df"]
+
+        st.markdown("---")
+
+        # ─ View toggle: Table vs Card ─
+        if "inv_view_mode" not in st.session_state:
+            st.session_state["inv_view_mode"] = "table"
+
+        view_c1, view_c2, view_c3 = st.columns([1, 1, 4])
+        with view_c1:
+            if st.button("📋 Table View",
+                         type="primary" if st.session_state["inv_view_mode"] == "table" else "secondary",
+                         use_container_width=True, key="inv_view_table"):
+                st.session_state["inv_view_mode"] = "table"
+                st.rerun()
+        with view_c2:
+            if st.button("🃏 Card View",
+                         type="primary" if st.session_state["inv_view_mode"] == "cards" else "secondary",
+                         use_container_width=True, key="inv_view_cards"):
+                st.session_state["inv_view_mode"] = "cards"
+                st.rerun()
+        with view_c3:
+            st.markdown("##### 📊 Results")
+
+        # ── SUMMARY CARDS (8 cards, 2 rows of 4, with PFS/FBA split) ──
+        # Calculate splits
+        def split_sum(df, col, network_filter=None, only_pfs=False):
+            """Sum a column, optionally filtered by network. Returns formatted string."""
+            if col not in df.columns:
+                return "—"
+            sub = df
+            if network_filter:
+                sub = sub[sub["FULFILLMENT_NETWORK"] == network_filter]
+            return int(sub[col].fillna(0).sum())
+
+        total_rows = len(inv_df_full)
+        unique_masters = inv_df_full["MASTER_ID"].nunique()
+        dno_count = int((inv_df_full["DNO_STATUS"].astype(str).str.upper() == "TRUE").sum())
+
+        # Per-metric PFS and FBA splits
+        # Note: For ACTUAL_AVAILABLE, STOW_PICKABLE, and Pattern WH Reserved (Mkt) — only PFS applies; FBA shows "—"
+        sum_fulfillable_pfs = split_sum(inv_df_full, "FULFILLABLE", network_filter="Pattern PFS")
+        sum_fulfillable_fba = split_sum(inv_df_full, "FULFILLABLE", network_filter="Amazon FBA")
+
+        sum_unfulfillable_pfs = split_sum(inv_df_full, "UNFULFILLABLE", network_filter="Pattern PFS")
+        sum_unfulfillable_fba = split_sum(inv_df_full, "UNFULFILLABLE", network_filter="Amazon FBA")
+
+        # Actual Available — only PFS (dedupe by master to avoid double-counting per pool)
+        actual_avail_pfs_df = inv_df_full[inv_df_full["FULFILLMENT_NETWORK"] == "Pattern PFS"].drop_duplicates(["MASTER_ID", "REGION"])
+        sum_actual_pfs = int(actual_avail_pfs_df["ACTUAL_AVAILABLE_QTY"].fillna(0).sum()) if "ACTUAL_AVAILABLE_QTY" in actual_avail_pfs_df.columns else 0
+
+        # Pattern WH Reserved (Mkt) — only PFS
+        sum_pwhr_pfs = split_sum(inv_df_full, "PATTERN_WAREHOUSE_RESERVED_FOR_MARKETPLACE", network_filter="Pattern PFS")
+
+        # Fulfillment Channel Units
+        sum_fc_pfs = split_sum(inv_df_full, "FULFILLMENT_CHANNEL_UNITS", network_filter="Pattern PFS")
+        sum_fc_fba = split_sum(inv_df_full, "FULFILLMENT_CHANNEL_UNITS", network_filter="Amazon FBA")
+
+        # Inbound
+        sum_inb_pfs = split_sum(inv_df_full, "INBOUND", network_filter="Pattern PFS")
+        sum_inb_fba = split_sum(inv_df_full, "INBOUND", network_filter="Amazon FBA")
+
+        # On Order
+        sum_oo_pfs = split_sum(inv_df_full, "ON_ORDER", network_filter="Pattern PFS")
+        sum_oo_fba = split_sum(inv_df_full, "ON_ORDER", network_filter="Amazon FBA")
+
+        # Active clickable filter state
+        if "inv_card_filter" not in st.session_state:
+            st.session_state["inv_card_filter"] = None  # None / "dno" / "unfulfillable" / "negative_actual"
+
+        def render_card_dual(label, pfs_val, fba_val=None, color_class="", clickable_id=None):
+            """Render a card with PFS / FBA split (or just one value if fba_val is None)."""
+            is_active = clickable_id is not None and st.session_state.get("inv_card_filter") == clickable_id
+            card_extra_class = f" active" if is_active else ""
+            html = f'<div class="inv-card{card_extra_class}"><div class="inv-card-label">{label}</div>'
+            if fba_val is None:
+                # Single value (e.g., Master IDs, DNO, Actual Available, Pattern WH Reserved)
+                v_class = color_class or "v"
+                html += f'<div class="inv-card-row"><span class="ch"></span><span class="v {v_class}">{pfs_val:,}</span></div>'
+            else:
+                # Two values: PFS / FBA
+                html += f'<div class="inv-card-row"><span class="ch">PFS</span><span class="v pfs">{pfs_val:,}</span></div>'
+                if fba_val == "—":
+                    html += f'<div class="inv-card-row"><span class="ch">FBA</span><span class="v muted">—</span></div>'
+                else:
+                    html += f'<div class="inv-card-row"><span class="ch">FBA</span><span class="v fba">{fba_val:,}</span></div>'
+            html += '</div>'
+            return html
+
+        # Row 1: Master IDs · Fulfillable · Unfulfillable · Actual Available
+        r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+        with r1c1:
+            st.markdown(render_card_dual("Master IDs", unique_masters, fba_val=None, color_class="master"), unsafe_allow_html=True)
+        with r1c2:
+            st.markdown(render_card_dual("Fulfillable", sum_fulfillable_pfs, sum_fulfillable_fba), unsafe_allow_html=True)
+        with r1c3:
+            is_unf_active = st.session_state.get("inv_card_filter") == "unfulfillable"
+            st.markdown(render_card_dual("Unfulfillable", sum_unfulfillable_pfs, sum_unfulfillable_fba), unsafe_allow_html=True)
+            unf_label = "🟢 Unfulfillable filter ON" if is_unf_active else "Click to filter > 0"
+            if st.button(unf_label, key="inv_card_unf_btn", use_container_width=True,
+                         type="primary" if is_unf_active else "secondary"):
+                st.session_state["inv_card_filter"] = None if is_unf_active else "unfulfillable"
+                st.rerun()
+        with r1c4:
+            is_neg_active = st.session_state.get("inv_card_filter") == "negative_actual"
+            st.markdown(render_card_dual("Actual Available", sum_actual_pfs, "—"), unsafe_allow_html=True)
+            neg_label = "🟢 Negative filter ON" if is_neg_active else "Click to filter < 0"
+            if st.button(neg_label, key="inv_card_neg_btn", use_container_width=True,
+                         type="primary" if is_neg_active else "secondary"):
+                st.session_state["inv_card_filter"] = None if is_neg_active else "negative_actual"
+                st.rerun()
+
+        # Row 2: Pattern WH Reserved · Fulfillment Channel Units · Inbound · On Order
+        r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+        with r2c1:
+            st.markdown(render_card_dual("Pattern WH Reserved (Mkt)", sum_pwhr_pfs, "—"), unsafe_allow_html=True)
+        with r2c2:
+            st.markdown(render_card_dual("Fulfillment Channel Units", sum_fc_pfs, sum_fc_fba), unsafe_allow_html=True)
+        with r2c3:
+            st.markdown(render_card_dual("Inbound", sum_inb_pfs, sum_inb_fba), unsafe_allow_html=True)
+        with r2c4:
+            st.markdown(render_card_dual("On Order", sum_oo_pfs, sum_oo_fba), unsafe_allow_html=True)
+
+        st.markdown("")
+
+        # ── FILTERS ──
+        with st.expander("🔎 Filters", expanded=True):
+            f1, f2, f3, f4 = st.columns(4)
+            with f1:
+                inv_f_region = st.multiselect("Region", sorted(inv_df_full["REGION"].dropna().unique().tolist()),
+                                              key="inv_f_region", placeholder="All regions")
+            with f2:
+                inv_f_network = st.multiselect("Fulfillment Network",
+                                               sorted(inv_df_full["FULFILLMENT_NETWORK"].dropna().unique().tolist()),
+                                               key="inv_f_network", placeholder="All networks")
+            with f3:
+                inv_f_pool = st.multiselect("Inventory Pool",
+                                            sorted(inv_df_full["INVENTORY_POOL"].dropna().unique().tolist()),
+                                            key="inv_f_pool", placeholder="All pools")
+            with f4:
+                inv_f_brand = st.multiselect("Brand",
+                                             sorted(inv_df_full["BRAND"].dropna().astype(str).unique().tolist()),
+                                             key="inv_f_brand", placeholder="All brands")
+
+            f5, f6, f7, f8 = st.columns(4)
+            with f5:
+                inv_f_vendor = st.multiselect("Vendor",
+                                              sorted(inv_df_full["VENDOR"].dropna().astype(str).unique().tolist()),
+                                              key="inv_f_vendor", placeholder="All vendors")
+            with f6:
+                inv_f_dno = st.multiselect("DNO",
+                                           sorted(inv_df_full["DNO_STATUS"].dropna().astype(str).unique().tolist()),
+                                           key="inv_f_dno", placeholder="All")
+            with f7:
+                if "INVENTORY_TYPE" in inv_df_full.columns:
+                    inv_f_invtype = st.multiselect("Inventory Type",
+                                                    sorted(inv_df_full["INVENTORY_TYPE"].dropna().astype(str).unique().tolist()),
+                                                    key="inv_f_invtype", placeholder="All")
+                else:
+                    inv_f_invtype = []
+            with f8:
+                if "BUNDLE_TYPE" in inv_df_full.columns:
+                    inv_f_bundle = st.multiselect("Bundle Type",
+                                                   sorted(inv_df_full["BUNDLE_TYPE"].dropna().astype(str).unique().tolist()),
+                                                   key="inv_f_bundle", placeholder="All")
+                else:
+                    inv_f_bundle = []
+
+            # Text search across all string cols
+            inv_search = st.text_input("🔍 Quick search (matches any column)", key="inv_search", placeholder="Type to filter...")
+
+        # Apply filters
+        inv_filtered = inv_df_full.copy()
+        if inv_f_region: inv_filtered = inv_filtered[inv_filtered["REGION"].isin(inv_f_region)]
+        if inv_f_network: inv_filtered = inv_filtered[inv_filtered["FULFILLMENT_NETWORK"].isin(inv_f_network)]
+        if inv_f_pool: inv_filtered = inv_filtered[inv_filtered["INVENTORY_POOL"].isin(inv_f_pool)]
+        if inv_f_brand: inv_filtered = inv_filtered[inv_filtered["BRAND"].astype(str).isin(inv_f_brand)]
+        if inv_f_vendor: inv_filtered = inv_filtered[inv_filtered["VENDOR"].astype(str).isin(inv_f_vendor)]
+        if inv_f_dno: inv_filtered = inv_filtered[inv_filtered["DNO_STATUS"].astype(str).isin(inv_f_dno)]
+        if inv_f_invtype and "INVENTORY_TYPE" in inv_filtered.columns:
+            inv_filtered = inv_filtered[inv_filtered["INVENTORY_TYPE"].astype(str).isin(inv_f_invtype)]
+        if inv_f_bundle and "BUNDLE_TYPE" in inv_filtered.columns:
+            inv_filtered = inv_filtered[inv_filtered["BUNDLE_TYPE"].astype(str).isin(inv_f_bundle)]
+        if inv_search.strip():
+            term = inv_search.strip().lower()
+            mask = inv_filtered.astype(str).apply(lambda r: term in " ".join(r.values).lower(), axis=1)
+            inv_filtered = inv_filtered[mask]
+
+        # Apply click-from-summary-card filters
+        card_filter = st.session_state.get("inv_card_filter")
+        if card_filter == "unfulfillable":
+            if "UNFULFILLABLE" in inv_filtered.columns:
+                inv_filtered = inv_filtered[inv_filtered["UNFULFILLABLE"].fillna(0) > 0]
+        elif card_filter == "negative_actual":
+            if "ACTUAL_AVAILABLE_QTY" in inv_filtered.columns:
+                inv_filtered = inv_filtered[inv_filtered["ACTUAL_AVAILABLE_QTY"].fillna(0) < 0]
+
+        # ── COLUMN VISIBILITY (Presets + Group toggles + Fine control) ──
+        with st.expander("⚙️ Customize Columns", expanded=False):
+            # Initialize visible columns state
+            if "inv_visible_cols" not in st.session_state:
+                st.session_state["inv_visible_cols"] = [c["key"] for c in INVENTORY_COLUMNS if c["default"]]
+
+            # ─ Presets (top row) ─
+            st.markdown("**Quick Views**")
+            preset_row1 = st.columns(5)
+            presets = {
+                "Compact":          [c["key"] for c in INVENTORY_COLUMNS if c["group"] in ("Identifiers", "Categorization", "Core") and c["key"] in {"MASTER_ID", "PART_NUMBER", "REGION", "FULFILLMENT_NETWORK", "DNO_STATUS", "FULFILLABLE", "STOW_PICKABLE_QTY", "ACTUAL_AVAILABLE_QTY"}],
+                "Standard":         [c["key"] for c in INVENTORY_COLUMNS if c["default"]],
+                "Planning Focus":   [c["key"] for c in INVENTORY_COLUMNS if c["group"] in ("Identifiers", "Categorization", "Core", "Planning")],
+                "Financial":        [c["key"] for c in INVENTORY_COLUMNS if c["group"] in ("Identifiers", "Categorization", "Core", "USD")],
+                "Detailed (All)":   [c["key"] for c in INVENTORY_COLUMNS],
+            }
+            for i, (preset_name, preset_cols) in enumerate(presets.items()):
+                with preset_row1[i]:
+                    if st.button(preset_name, key=f"inv_preset_{i}", use_container_width=True):
+                        st.session_state["inv_visible_cols"] = preset_cols
+                        st.rerun()
+
+            st.markdown("")
+            st.markdown("**Toggle Groups On/Off**")
+            st.caption("Quickly include/exclude an entire category of columns.")
+
+            # ─ Group toggles ─
+            groups = []
+            seen = set()
+            for c in INVENTORY_COLUMNS:
+                if c["group"] not in seen:
+                    groups.append(c["group"])
+                    seen.add(c["group"])
+
+            group_cols_visible = {g: any(c["key"] in st.session_state["inv_visible_cols"] for c in INVENTORY_COLUMNS if c["group"] == g) for g in groups}
+            group_btn_cols = st.columns(len(groups))
+            for i, g in enumerate(groups):
+                group_count_total = sum(1 for c in INVENTORY_COLUMNS if c["group"] == g)
+                group_count_on = sum(1 for c in INVENTORY_COLUMNS if c["group"] == g and c["key"] in st.session_state["inv_visible_cols"])
+                btn_label = f"{g}\n{group_count_on}/{group_count_total}"
+                with group_btn_cols[i]:
+                    if st.button(btn_label, key=f"inv_grp_{g}", use_container_width=True,
+                                 type="primary" if group_cols_visible[g] else "secondary"):
+                        # Toggle: if any in group are on, turn all off. Else, turn all on.
+                        current = set(st.session_state["inv_visible_cols"])
+                        group_keys = [c["key"] for c in INVENTORY_COLUMNS if c["group"] == g]
+                        if group_cols_visible[g]:
+                            current -= set(group_keys)
+                        else:
+                            current |= set(group_keys)
+                        st.session_state["inv_visible_cols"] = [c["key"] for c in INVENTORY_COLUMNS if c["key"] in current]
+                        st.rerun()
+
+            st.markdown("")
+            st.markdown("**Fine Control — Individual Columns**")
+            st.caption("Pick exactly which columns to show. Grouped for readability.")
+
+            # ─ Per-group multi-select ─
+            for g in groups:
+                group_cols = [c for c in INVENTORY_COLUMNS if c["group"] == g]
+                label_map = {c["label"]: c["key"] for c in group_cols}
+                key_to_label = {c["key"]: c["label"] for c in group_cols}
+                current_in_group = [key_to_label[k] for k in st.session_state["inv_visible_cols"] if k in key_to_label]
+
+                selected = st.multiselect(
+                    f"{g} ({len(current_in_group)}/{len(group_cols)})",
+                    options=[c["label"] for c in group_cols],
+                    default=current_in_group,
+                    key=f"inv_ms_{g}",
+                    placeholder=f"No {g} columns visible",
+                )
+                # Reconcile: keep order of existing keys, add new keys at the end (preserves user reordering)
+                existing_order = list(st.session_state["inv_visible_cols"])
+                # Remove all this group's keys
+                existing_order = [k for k in existing_order if k not in {c["key"] for c in group_cols}]
+                # Add selected keys back (in the order they appear in INVENTORY_COLUMNS for new additions)
+                selected_keys_in_group = [label_map[lbl] for lbl in selected]
+                # Preserve any selected key that was already there (in its existing position)
+                # by walking through previous state
+                prev_state = st.session_state.get("_inv_prev_visible", st.session_state["inv_visible_cols"])
+                ordered_selected = []
+                # First add ones in their previous position
+                for k in prev_state:
+                    if k in selected_keys_in_group and k not in ordered_selected:
+                        ordered_selected.append(k)
+                # Then add any newly-added ones at the end
+                for k in selected_keys_in_group:
+                    if k not in ordered_selected:
+                        ordered_selected.append(k)
+                # Merge back: existing_order (other groups) + ordered_selected for this group
+                # But we want to insert this group's selections in roughly their right spot.
+                # Simpler: rebuild from scratch using INVENTORY_COLUMNS order as default, but honor previous state
+                all_selected = set(existing_order) | set(ordered_selected)
+                # Use previous session state order if it has these keys, else fall back to INVENTORY_COLUMNS order
+                rebuilt = []
+                for k in st.session_state["inv_visible_cols"]:
+                    if k in all_selected and k not in rebuilt:
+                        rebuilt.append(k)
+                # Append anything new
+                for c in INVENTORY_COLUMNS:
+                    if c["key"] in all_selected and c["key"] not in rebuilt:
+                        rebuilt.append(c["key"])
+                st.session_state["inv_visible_cols"] = rebuilt
+
+            # ─ Tip: drag column headers in the table to reorder ─
+            st.caption("💡 **Tip**: in the table below, **drag column headers** left or right to reorder columns interactively.")
+
+        # ── DISPLAY: TABLE VIEW or CARD VIEW ──
+        visible_keys = [k for k in st.session_state["inv_visible_cols"] if k in inv_filtered.columns]
+        if not visible_keys:
+            st.warning("No columns selected. Pick at least one in '⚙️ Customize Columns'.")
+        elif st.session_state.get("inv_view_mode", "table") == "table":
+            # ═══ TABLE VIEW ═══
+            # Rename columns to friendly labels for display
+            label_map = {c["key"]: c["label"] for c in INVENTORY_COLUMNS}
+            display_df = inv_filtered[visible_keys].copy()
+            display_df.columns = [label_map.get(k, k) for k in visible_keys]
+
+            st.caption(f"Showing **{len(display_df):,}** of **{len(inv_df_full):,}** rows")
+
+            # Style: highlight calculated columns + DNO rows + add Master ID divider
+            first_rows_of_master = set()
+            prev_master = None
+            for idx, val in display_df["Master ID"].items() if "Master ID" in display_df.columns else []:
+                if val != prev_master and prev_master is not None:
+                    first_rows_of_master.add(idx)
+                prev_master = val
+
+            def inv_color_rows(row):
+                styles = [""] * len(row)
+                # Red tint for DNO=True rows
+                if "DNO" in row.index:
+                    if str(row.get("DNO", "")).strip().upper() == "TRUE":
+                        styles = ["background-color: rgba(239,68,68,0.10)"] * len(row)
+                # Color the calculated columns
+                for i, col in enumerate(row.index):
+                    if col == "Actual Available":
+                        try:
+                            v = float(row[col]) if pd.notna(row[col]) else 0
+                            if v < 0:
+                                styles[i] = (styles[i] + ";" if styles[i] else "") + "background-color: rgba(245,158,11,0.25); color: #f59e0b; font-weight: 600;"
+                            elif v > 0:
+                                styles[i] = (styles[i] + ";" if styles[i] else "") + "background-color: rgba(34,197,94,0.10); color: #22c55e; font-weight: 600;"
+                        except (ValueError, TypeError):
+                            pass
+                # Master ID divider — thin line at top of first row of a new master_id group
+                if row.name in first_rows_of_master:
+                    for i in range(len(styles)):
+                        styles[i] = (styles[i] + ";" if styles[i] else "") + "border-top: 2px solid rgba(148,163,184,0.35);"
+                return styles
+
+            if len(display_df) > 5000:
+                st.info(f"📊 Showing {len(display_df):,} rows — row coloring disabled for performance.")
+                st.dataframe(display_df, use_container_width=True, hide_index=True, height=600,
+                             column_config={display_df.columns[0]: st.column_config.Column(pinned="left")} if len(display_df.columns) > 0 else None)
+            else:
+                col_config = {}
+                if len(display_df.columns) > 0:
+                    col_config[display_df.columns[0]] = st.column_config.Column(pinned="left")
+                st.dataframe(
+                    display_df.style.apply(inv_color_rows, axis=1),
+                    use_container_width=True, hide_index=True,
+                    height=min(len(display_df) * 38 + 40, 700),
+                    column_config=col_config,
+                )
+        else:
+            # ═══ CARD VIEW ═══
+            # Region filter for cards
+            card_region_options = ["Both (GB + EU)", "GB only", "EU only"]
+            if "inv_card_region" not in st.session_state:
+                st.session_state["inv_card_region"] = "Both (GB + EU)"
+            crc1, crc2 = st.columns([1, 5])
+            with crc1:
+                card_region = st.selectbox("Region", card_region_options,
+                                            index=card_region_options.index(st.session_state["inv_card_region"]),
+                                            key="inv_card_region_sel", label_visibility="collapsed")
+                st.session_state["inv_card_region"] = card_region
+
+            # Card columns config
+            with st.expander("⚙️ Card Columns — pick which metrics show on each card", expanded=False):
+                if "inv_card_cols" not in st.session_state:
+                    # Default: just the core 5 columns
+                    st.session_state["inv_card_cols"] = ["FULFILLABLE", "STOW_PICKABLE_QTY", "PFS_RESERVED", "ACTUAL_AVAILABLE_QTY", "UNFULFILLABLE"]
+
+                # Filter to numeric/categorical metric columns (skip identifiers)
+                card_col_options = [c for c in INVENTORY_COLUMNS if c["type"] == "num" or c["key"] in ("INVENTORY_POOL", "DNO_STATUS")]
+                label_to_key_card = {c["label"]: c["key"] for c in card_col_options}
+                key_to_label_card = {c["key"]: c["label"] for c in card_col_options}
+                current_card_labels = [key_to_label_card[k] for k in st.session_state["inv_card_cols"] if k in key_to_label_card]
+
+                selected_card_labels = st.multiselect(
+                    "Metrics to show on each card",
+                    options=[c["label"] for c in card_col_options],
+                    default=current_card_labels,
+                    key="inv_card_cols_select",
+                )
+                st.session_state["inv_card_cols"] = [label_to_key_card[lbl] for lbl in selected_card_labels]
+
+            # Filter inv_filtered by region selection
+            if card_region == "GB only":
+                inv_for_cards = inv_filtered[inv_filtered["REGION"] == "GB"]
+            elif card_region == "EU only":
+                inv_for_cards = inv_filtered[inv_filtered["REGION"] == "EU"]
+            else:
+                inv_for_cards = inv_filtered
+
+            unique_masters_in_view = inv_for_cards["MASTER_ID"].dropna().unique().tolist()
+            st.caption(f"Showing **{len(unique_masters_in_view)}** Master IDs in {card_region}")
+
+            if not unique_masters_in_view:
+                st.info("No data matches the current filter.")
+            else:
+                card_cols_to_show = st.session_state.get("inv_card_cols", [])
+                key_to_label_all = {c["key"]: c["label"] for c in INVENTORY_COLUMNS}
+
+                for master_id in unique_masters_in_view[:50]:  # cap at 50 cards for performance
+                    master_rows = inv_for_cards[inv_for_cards["MASTER_ID"] == master_id]
+                    # Get header info from first row
+                    first = master_rows.iloc[0]
+                    title = str(first.get("TITLE", "") or "")[:80]
+                    vendor = str(first.get("VENDOR", "") or "")
+                    part_no = str(first.get("PART_NUMBER", "") or "")
+                    asin = str(first.get("ASIN", "") or "")
+                    is_dno_any = (master_rows["DNO_STATUS"].astype(str).str.upper() == "TRUE").any()
+
+                    # Build card header
+                    border_left = "border-left: 4px solid #f85149;" if is_dno_any else "border-left: 4px solid #3fb950;"
+                    card_html = (
+                        f'<div style="background:#161b22; border:1px solid #30363d; {border_left} border-radius:10px; padding:16px 20px; margin-bottom:12px;">'
+                        f'<div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:8px;">'
+                        f'<div><div style="font-size:14px; font-weight:700; color:#fff;">{master_id}</div>'
+                        f'<div style="font-size:13px; color:#c9d1d9; margin-top:2px;">{title}</div>'
+                        f'<div style="font-size:11px; color:#7d8590; font-family:monospace; margin-top:4px;">{part_no} · {asin} · {vendor}</div></div>'
+                    )
+                    if is_dno_any:
+                        card_html += '<div style="background:rgba(239,68,68,0.18); color:#f85149; padding:4px 10px; border-radius:10px; font-size:11px; font-weight:700;">⛔ DNO</div>'
+                    card_html += '</div>'
+
+                    # Now render per-region sections
+                    regions_in_master = sorted(master_rows["REGION"].dropna().unique().tolist())
+                    if card_region == "GB only":
+                        regions_in_master = [r for r in regions_in_master if r == "GB"]
+                    elif card_region == "EU only":
+                        regions_in_master = [r for r in regions_in_master if r == "EU"]
+
+                    if len(regions_in_master) > 1 and card_region == "Both (GB + EU)":
+                        card_html += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:10px;">'
+                    else:
+                        card_html += '<div style="margin-top:10px;">'
+
+                    for region in regions_in_master:
+                        region_rows = master_rows[master_rows["REGION"] == region]
+                        flag = "🇬🇧" if region == "GB" else "🇪🇺"
+                        card_html += f'<div style="background:#0d1117; border:1px solid #30363d; border-radius:8px; padding:10px 14px;">'
+                        card_html += f'<div style="font-size:11px; color:#94a3b8; font-weight:700; margin-bottom:8px;">{flag} {region}</div>'
+
+                        for _, row in region_rows.iterrows():
+                            network = row.get("FULFILLMENT_NETWORK", "")
+                            pool = row.get("INVENTORY_POOL", "")
+                            net_color = "#ec4899" if network == "Pattern PFS" else "#f59e0b"
+                            card_html += f'<div style="margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid rgba(255,255,255,0.05);">'
+                            card_html += f'<div style="font-size:11px; color:{net_color}; font-weight:600; margin-bottom:4px;">{network} — {pool}</div>'
+                            for col_key in card_cols_to_show:
+                                if col_key in row.index:
+                                    val = row[col_key]
+                                    if pd.notna(val):
+                                        label = key_to_label_all.get(col_key, col_key)
+                                        # Color for Actual Available
+                                        v_color = "#c9d1d9"
+                                        v_extra = ""
+                                        if col_key == "ACTUAL_AVAILABLE_QTY":
+                                            try:
+                                                v_num = float(val)
+                                                if v_num < 0:
+                                                    v_color = "#f59e0b"
+                                                    v_extra = " font-weight:700;"
+                                                elif v_num > 0:
+                                                    v_color = "#3fb950"
+                                                    v_extra = " font-weight:700;"
+                                            except (ValueError, TypeError):
+                                                pass
+                                        try:
+                                            val_display = f"{int(float(val)):,}" if str(val).replace(".", "").replace("-", "").isdigit() else str(val)
+                                        except (ValueError, TypeError):
+                                            val_display = str(val)
+                                        card_html += f'<div style="display:flex; justify-content:space-between; font-size:12px; padding:2px 0;"><span style="color:#94a3b8;">{label}</span><span style="color:{v_color};{v_extra}">{val_display}</span></div>'
+                            card_html += '</div>'
+                        card_html += '</div>'
+                    card_html += '</div></div>'
+                    st.markdown(card_html, unsafe_allow_html=True)
+
+                if len(unique_masters_in_view) > 50:
+                    st.info(f"📌 Showing first 50 of {len(unique_masters_in_view)} Master IDs. Use filters to narrow down.")
+
+        # ── QUICK COPY ──
+        st.markdown("")
+        with st.expander("📋 Quick Copy — copy a full column of values", expanded=False):
+            st.caption("Pick a column from the filtered results, then click Copy to download all its unique values as a list (one per line).")
+
+            # Build list of available columns from the actual data + use friendly labels
+            label_map_all = {c["key"]: c["label"] for c in INVENTORY_COLUMNS}
+            available_for_copy = [k for k in inv_filtered.columns if k in label_map_all]
+            label_to_key_copy = {label_map_all[k]: k for k in available_for_copy}
+            copy_labels = [label_map_all[k] for k in available_for_copy]
+
+            if not copy_labels:
+                st.info("No data available to copy.")
+            else:
+                qc_c1, qc_c2 = st.columns([3, 1])
+                with qc_c1:
+                    # Default to Master ID if available
+                    default_idx = 0
+                    if "Master ID" in copy_labels:
+                        default_idx = copy_labels.index("Master ID")
+                    chosen_label = st.selectbox(
+                        "Column to copy",
+                        options=copy_labels,
+                        index=default_idx,
+                        key="inv_qc_col",
+                        label_visibility="collapsed",
+                    )
+                    chosen_key = label_to_key_copy[chosen_label]
+                    unique_vals = inv_filtered[chosen_key].dropna().unique().tolist()
+                    copy_text = "\n".join(str(v) for v in unique_vals)
+                with qc_c2:
+                    st.download_button(
+                        f"📋 Copy {chosen_label} ({len(unique_vals)})",
+                        copy_text,
+                        f"{chosen_key.lower()}_values.txt",
+                        "text/plain",
+                        use_container_width=True,
+                        key="inv_qc_download",
+                    )
+
+                # Show a preview of the values
+                if unique_vals:
+                    preview = "\n".join(str(v) for v in unique_vals[:10])
+                    if len(unique_vals) > 10:
+                        preview += f"\n… and {len(unique_vals) - 10} more"
+                    st.code(preview, language=None)
+
+        # ── EXPORTS ──
+        st.markdown("")
+        st.markdown("##### 📤 Export")
+        e1, e2, e3, e4 = st.columns(4)
+        with e1:
+            st.download_button(
+                f"⬇️ All ({len(inv_df_full):,}) — CSV",
+                inv_df_full.to_csv(index=False),
+                f"inventory_all_{datetime.date.today().isoformat()}.csv",
+                "text/csv", use_container_width=True, key="inv_dl_all_csv",
+            )
+        with e2:
+            st.download_button(
+                f"⬇️ Filtered ({len(inv_filtered):,}) — CSV",
+                inv_filtered.to_csv(index=False),
+                f"inventory_filtered_{datetime.date.today().isoformat()}.csv",
+                "text/csv", use_container_width=True, key="inv_dl_filt_csv",
+            )
+        with e3:
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                inv_df_full.to_excel(writer, sheet_name="Inventory", index=False)
+            st.download_button(
+                f"⬇️ All — Excel",
+                buf.getvalue(),
+                f"inventory_all_{datetime.date.today().isoformat()}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True, key="inv_dl_all_xlsx",
+            )
+        with e4:
+            buf2 = io.BytesIO()
+            with pd.ExcelWriter(buf2, engine="openpyxl") as writer:
+                inv_filtered.to_excel(writer, sheet_name="Inventory_Filtered", index=False)
+            st.download_button(
+                f"⬇️ Filtered — Excel",
+                buf2.getvalue(),
+                f"inventory_filtered_{datetime.date.today().isoformat()}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True, key="inv_dl_filt_xlsx",
             )
 
 
