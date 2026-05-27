@@ -96,14 +96,24 @@ st.markdown("""
     .fr-attr-row .mk {font-size:13px;}
 
     /* ── Inventory Summary Cards (2-row layout, PFS/FBA split) ── */
-    .inv-card {background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px 14px;height:100%;}
+    .inv-card {
+        background:#161b22;
+        border:1px solid #30363d;
+        border-radius:10px;
+        padding:12px 14px;
+        height:100%;
+        min-height:90px;
+        display:flex;
+        flex-direction:column;
+        justify-content:center;
+    }
     .inv-card .inv-card-label {font-size:10px;color:#7d8590;text-transform:uppercase;letter-spacing:0.4px;font-weight:600;margin-bottom:6px;}
-    .inv-card .inv-card-row {display:flex;justify-content:space-between;align-items:baseline;font-size:12px;padding:2px 0;}
+    .inv-card .inv-card-row {display:flex;justify-content:space-between;align-items:baseline;font-size:12px;padding:3px 0;}
     .inv-card .inv-card-row .ch {color:#94a3b8;font-weight:500;font-size:10px;}
     .inv-card .inv-card-row .v {font-weight:700;font-size:18px;color:#e6edf3;}
     .inv-card .inv-card-row .v.pfs {color:#ec4899;}
     .inv-card .inv-card-row .v.fba {color:#f59e0b;}
-    .inv-card .inv-card-row .v.master {color:#a855f7;}
+    .inv-card .inv-card-row .v.master {color:#a855f7;font-size:28px;}
     .inv-card .inv-card-row .v.dno {color:#f85149;}
     .inv-card .inv-card-row .v.muted {color:#525965;font-weight:500;font-size:14px;}
     .inv-card.clickable {cursor:pointer;transition:border-color 0.15s, background 0.15s;}
@@ -590,7 +600,7 @@ WITH warehouse_stock AS (
     SUM(QUANTITY)            AS STOW_PICKABLE_QTY
   FROM "ANALYTICS_DB"."REPORTING"."REPORT__WAREHOUSE_INVENTORY_BY_PRODUCT_CURRENT"
   WHERE MASTER_ID IN ({master_ids})
-    AND warehouse_name IN ('Northampton', 'Wroclaw')
+    AND warehouse_name IN ({warehouse_list})
     AND status = 'Sellable'
     AND area IN ('A-MOD', 'Cage', 'F-MOD', 'B-Mod', 'BIO', 'OVERAGE', 'Shelving')
   GROUP BY WAREHOUSE_NAME, MASTER_ID
@@ -629,8 +639,9 @@ inventory_hub AS (
     PIPELINE_UNITS_PATTERN_OWNED_WOS_DEFAULT_FCST
   FROM PATTERN_DB.OPERATIONS.INVENTORY_HUB_NORMALIZED_INVENTORY_ITEMS
   WHERE MASTER_ID IN ({master_ids})
-    AND REGION IN ('GB', 'EU')
-    AND FULFILLMENT_NETWORK IN ('Pattern PFS', 'Amazon FBA')
+    {region_filter}
+    {network_filter}
+    {inv_type_filter}
 ),
 warehouse_pivot AS (
   SELECT
@@ -719,21 +730,85 @@ ORDER BY MASTER_ID, ih.REGION, ih.FULFILLMENT_NETWORK
 """
 
 
-def build_inventory_query(master_ids):
-    """Build inventory query for given master IDs."""
+def build_inventory_query(master_ids, regions=None, networks=None, inv_types=None):
+    """
+    Build inventory query for given master IDs with optional upstream filters.
+
+    Args:
+        master_ids: list of master IDs
+        regions: list of regions to include (e.g. ['GB'], ['EU'], ['GB','EU']). None = both.
+        networks: list of networks (e.g. ['Pattern PFS'], ['Amazon FBA']). None = both.
+        inv_types: list of inventory types (e.g. ['Pattern Owned']). None = no filter.
+    """
     def safe(s): return s.strip().replace("'", "''")
     quoted = ", ".join(f"'{safe(m)}'" for m in master_ids if m.strip())
-    return INVENTORY_QUERY_TEMPLATE.format(master_ids=quoted).strip()
+
+    # Build region filter for inventory_hub
+    if regions and len(regions) > 0:
+        region_list = ", ".join(f"'{safe(r)}'" for r in regions)
+        region_filter = f"AND REGION IN ({region_list})"
+    else:
+        region_filter = "AND REGION IN ('GB', 'EU')"
+
+    # Build network filter
+    if networks and len(networks) > 0:
+        net_list = ", ".join(f"'{safe(n)}'" for n in networks)
+        network_filter = f"AND FULFILLMENT_NETWORK IN ({net_list})"
+    else:
+        network_filter = "AND FULFILLMENT_NETWORK IN ('Pattern PFS', 'Amazon FBA')"
+
+    # Build inventory_type filter
+    if inv_types and len(inv_types) > 0:
+        type_list = ", ".join(f"'{safe(t)}'" for t in inv_types)
+        inv_type_filter = f"AND INVENTORY_TYPE IN ({type_list})"
+    else:
+        inv_type_filter = ""
+
+    # Build warehouse list based on regions (to also reduce warehouse_stock pull)
+    warehouse_map = {"GB": "Northampton", "EU": "Wroclaw"}
+    if regions and len(regions) > 0:
+        warehouses = [warehouse_map[r] for r in regions if r in warehouse_map]
+        if not warehouses:
+            warehouses = ["Northampton", "Wroclaw"]
+    else:
+        warehouses = ["Northampton", "Wroclaw"]
+    warehouse_list = ", ".join(f"'{w}'" for w in warehouses)
+
+    return INVENTORY_QUERY_TEMPLATE.format(
+        master_ids=quoted,
+        region_filter=region_filter,
+        network_filter=network_filter,
+        inv_type_filter=inv_type_filter,
+        warehouse_list=warehouse_list,
+    ).strip()
 
 
-def run_inventory_lookup(master_ids):
-    """Run the inventory query for a list of master IDs."""
+@st.cache_data(ttl=300, show_spinner=False)  # 5-minute cache
+def _cached_run_inventory_lookup(master_ids_tuple, regions_tuple, networks_tuple, inv_types_tuple):
+    """Internal cached version of inventory lookup. Returns DataFrame."""
+    master_ids = list(master_ids_tuple)
+    regions = list(regions_tuple) if regions_tuple else None
+    networks = list(networks_tuple) if networks_tuple else None
+    inv_types = list(inv_types_tuple) if inv_types_tuple else None
     conn = get_connection()
-    return pd.read_sql(build_inventory_query(master_ids), conn)
+    return pd.read_sql(build_inventory_query(master_ids, regions, networks, inv_types), conn)
 
 
-def resolve_listing_to_master(listing_ids):
-    """Resolve Listing IDs (and any other PC catalog identifier) to Master IDs."""
+def run_inventory_lookup(master_ids, regions=None, networks=None, inv_types=None):
+    """Run the inventory query for a list of master IDs with optional upstream filters."""
+    # Convert lists to tuples for cache hashing
+    return _cached_run_inventory_lookup(
+        tuple(sorted(set(master_ids))),
+        tuple(sorted(regions)) if regions else None,
+        tuple(sorted(networks)) if networks else None,
+        tuple(sorted(inv_types)) if inv_types else None,
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_resolve_listing_to_master(listing_ids_tuple):
+    """Internal cached version of listing→master resolution."""
+    listing_ids = list(listing_ids_tuple)
     if not listing_ids:
         return {}
     def safe(s): return s.strip().replace("'", "''")
@@ -755,23 +830,60 @@ WHERE (UPPER(a.LISTING_ID) IN ({upper_list})
     return dict(zip(df["LISTING_ID"], df["MASTER_ID"]))
 
 
-def get_brand_master_ids(brand_name, limit=None):
-    """Get master IDs for a brand (case-insensitive, matches against BRAND or VENDOR)."""
+def resolve_listing_to_master(listing_ids):
+    """Resolve Listing IDs to Master IDs (cached)."""
+    return _cached_resolve_listing_to_master(tuple(sorted(set(listing_ids))))
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_get_brand_master_ids(brand_name, limit, regions_tuple, networks_tuple, inv_types_tuple):
+    """Internal cached version of brand→master IDs lookup."""
     def safe(s): return s.strip().replace("'", "''")
     limit_clause = f"LIMIT {int(limit)}" if limit else ""
-    # Note: inventory_hub doesn't have BRAND col, but the warehouse stock table does.
-    # We use VENDOR from the hub since that's what's available there.
+    regions = list(regions_tuple) if regions_tuple else None
+    networks = list(networks_tuple) if networks_tuple else None
+    inv_types = list(inv_types_tuple) if inv_types_tuple else None
+
+    if regions and len(regions) > 0:
+        rlist = ", ".join(f"'{safe(r)}'" for r in regions)
+        region_clause = f"AND REGION IN ({rlist})"
+    else:
+        region_clause = "AND REGION IN ('GB', 'EU')"
+
+    network_clause = ""
+    if networks and len(networks) > 0:
+        nlist = ", ".join(f"'{safe(n)}'" for n in networks)
+        network_clause = f"AND FULFILLMENT_NETWORK IN ({nlist})"
+
+    inv_type_clause = ""
+    if inv_types and len(inv_types) > 0:
+        tlist = ", ".join(f"'{safe(t)}'" for t in inv_types)
+        inv_type_clause = f"AND INVENTORY_TYPE IN ({tlist})"
+
     query = f"""
 SELECT DISTINCT MASTER_ID
 FROM PATTERN_DB.OPERATIONS.INVENTORY_HUB_NORMALIZED_INVENTORY_ITEMS
 WHERE UPPER(VENDOR) = UPPER('{safe(brand_name)}')
-  AND REGION IN ('GB', 'EU')
   AND MASTER_ID IS NOT NULL
+  {region_clause}
+  {network_clause}
+  {inv_type_clause}
 {limit_clause}
 """
     conn = get_connection()
     df = pd.read_sql(query, conn)
     return df["MASTER_ID"].tolist()
+
+
+def get_brand_master_ids(brand_name, limit=None, regions=None, networks=None, inv_types=None):
+    """Get master IDs for a brand (cached, case-insensitive against VENDOR in inventory hub)."""
+    return _cached_get_brand_master_ids(
+        brand_name.strip(),
+        limit if limit else 0,
+        tuple(sorted(regions)) if regions else None,
+        tuple(sorted(networks)) if networks else None,
+        tuple(sorted(inv_types)) if inv_types else None,
+    )
 
 
 # Inventory column metadata
@@ -1535,8 +1647,44 @@ with inventory_tab:
 
     st.markdown("")
 
+    # ── UPSTREAM FILTERS (apply to Snowflake query — reduce data volume) ──
+    with st.expander("⚡ Pre-fetch Filters (faster queries)", expanded=False):
+        st.caption("These filters are applied **at the Snowflake level** — only matching rows will be fetched. Defaults are open (Both / All) so you don't miss anything.")
+        uf_c1, uf_c2, uf_c3 = st.columns(3)
+        with uf_c1:
+            inv_uf_region = st.multiselect(
+                "Region",
+                options=["GB", "EU"],
+                default=["GB", "EU"],
+                key="inv_uf_region",
+                help="Pre-filter by region. Both selected = no region restriction.",
+            )
+        with uf_c2:
+            inv_uf_network = st.multiselect(
+                "Fulfillment Network",
+                options=["Pattern PFS", "Amazon FBA"],
+                default=["Pattern PFS", "Amazon FBA"],
+                key="inv_uf_network",
+                help="Pre-filter by network.",
+            )
+        with uf_c3:
+            inv_uf_inv_type = st.multiselect(
+                "Inventory Type",
+                options=["Pattern Owned", "Customer Owned", "3PL"],
+                default=[],
+                key="inv_uf_inv_type",
+                placeholder="All types (no filter)",
+                help="Leave empty for all types. Pick one or more to restrict.",
+            )
+
     inventory_master_ids = []
     inv_run_triggered = False
+
+    # Capture upstream filter values for use in queries below
+    # Empty list = no filter (build_inventory_query defaults to GB,EU + both networks)
+    uf_regions = inv_uf_region if inv_uf_region else None
+    uf_networks = inv_uf_network if inv_uf_network else None
+    uf_inv_types = inv_uf_inv_type if inv_uf_inv_type else None
 
     if st.session_state["inv_mode"] == "ids":
         # ── ID-BASED INPUT ──
@@ -1565,7 +1713,7 @@ with inventory_tab:
             if st.button(f"▶ Look Up Inventory for {len(raw_ids)} identifier(s)",
                          type="primary", use_container_width=True, key="inv_run_ids"):
                 inv_run_triggered = True
-                progress_bar = st.progress(0, text="Connecting to Snowflake...")
+                progress_bar = st.progress(0, text="🔌 Connecting to Snowflake...")
 
                 try:
                     # Step 1: Separate Master IDs from Listing IDs
@@ -1581,7 +1729,7 @@ with inventory_tab:
                     resolution_map = {}
 
                     if listing_candidates:
-                        progress_bar.progress(20, text=f"Resolving {len(listing_candidates)} Listing ID(s) to Master IDs...")
+                        progress_bar.progress(15, text=f"🔗 Resolving {len(listing_candidates)} Listing ID(s) → Master IDs...")
                         try:
                             resolution_map = resolve_listing_to_master(listing_candidates)
                             resolved_masters.extend(resolution_map.values())
@@ -1595,9 +1743,14 @@ with inventory_tab:
                         progress_bar.empty()
                         st.error("No Master IDs could be resolved from your input. Please check the identifiers.")
                     else:
-                        progress_bar.progress(50, text=f"Fetching inventory data for {len(resolved_masters)} Master ID(s)...")
-                        inv_df = run_inventory_lookup(resolved_masters)
-                        progress_bar.progress(100, text=f"Done — {len(inv_df)} row(s) found!")
+                        progress_bar.progress(35, text=f"📦 Pulling warehouse stock (Northampton + Wroclaw)...")
+                        time.sleep(0.1)  # let UI breathe
+                        progress_bar.progress(55, text=f"🔄 Joining with Inventory Hub for {len(resolved_masters)} Master ID(s)...")
+                        inv_df = run_inventory_lookup(resolved_masters,
+                                                      regions=uf_regions, networks=uf_networks, inv_types=uf_inv_types)
+                        progress_bar.progress(85, text="🧮 Calculating Actual Available (Stow Pickable − PFS Reserved)...")
+                        time.sleep(0.1)
+                        progress_bar.progress(100, text=f"✅ Done — {len(inv_df)} row(s) found!")
                         time.sleep(0.3)
                         progress_bar.empty()
 
@@ -1633,21 +1786,27 @@ with inventory_tab:
             if st.button(f"🏷️ Fetch Inventory for '{inv_brand.strip()}'",
                          type="primary", use_container_width=True, key="inv_run_brand"):
                 inv_run_triggered = True
-                progress_bar = st.progress(0, text="Connecting to Snowflake...")
+                progress_bar = st.progress(0, text="🔌 Connecting to Snowflake...")
 
                 try:
-                    progress_bar.progress(20, text=f"Finding Master IDs for brand '{inv_brand.strip()}'...")
+                    progress_bar.progress(15, text=f"🔍 Finding Master IDs for brand '{inv_brand.strip()}'...")
                     limit = None if inv_brand_limit == "No limit" else int(inv_brand_limit)
-                    brand_masters = get_brand_master_ids(inv_brand.strip(), limit=limit)
+                    brand_masters = get_brand_master_ids(inv_brand.strip(), limit=limit,
+                                                          regions=uf_regions, networks=uf_networks, inv_types=uf_inv_types)
 
                     if not brand_masters:
                         progress_bar.empty()
-                        st.warning(f"No Master IDs found for brand '{inv_brand.strip()}'. Check spelling — matching is case-insensitive but exact.")
+                        st.warning(f"No Master IDs found for brand '{inv_brand.strip()}' with the current pre-fetch filters. Try widening the filters.")
                         st.session_state.pop("inv_df", None)
                     else:
-                        progress_bar.progress(50, text=f"Fetching inventory for {len(brand_masters)} Master ID(s)...")
-                        inv_df = run_inventory_lookup(brand_masters)
-                        progress_bar.progress(100, text=f"Done — {len(inv_df)} row(s) found!")
+                        progress_bar.progress(35, text=f"📦 Pulling warehouse stock (Northampton + Wroclaw) for {len(brand_masters)} Master IDs...")
+                        time.sleep(0.1)
+                        progress_bar.progress(55, text=f"🔄 Joining with Inventory Hub data...")
+                        inv_df = run_inventory_lookup(brand_masters,
+                                                       regions=uf_regions, networks=uf_networks, inv_types=uf_inv_types)
+                        progress_bar.progress(85, text="🧮 Calculating Actual Available (Stow Pickable − PFS Reserved)...")
+                        time.sleep(0.1)
+                        progress_bar.progress(100, text=f"✅ Done — {len(inv_df)} row(s) found!")
                         time.sleep(0.3)
                         progress_bar.empty()
 
@@ -1672,26 +1831,7 @@ with inventory_tab:
         inv_df_full = st.session_state["inv_df"]
 
         st.markdown("---")
-
-        # ─ View toggle: Table vs Card ─
-        if "inv_view_mode" not in st.session_state:
-            st.session_state["inv_view_mode"] = "table"
-
-        view_c1, view_c2, view_c3 = st.columns([1, 1, 4])
-        with view_c1:
-            if st.button("📋 Table View",
-                         type="primary" if st.session_state["inv_view_mode"] == "table" else "secondary",
-                         use_container_width=True, key="inv_view_table"):
-                st.session_state["inv_view_mode"] = "table"
-                st.rerun()
-        with view_c2:
-            if st.button("🃏 Card View",
-                         type="primary" if st.session_state["inv_view_mode"] == "cards" else "secondary",
-                         use_container_width=True, key="inv_view_cards"):
-                st.session_state["inv_view_mode"] = "cards"
-                st.rerun()
-        with view_c3:
-            st.markdown("##### 📊 Results")
+        st.markdown("##### 📊 Results")
 
         # ── SUMMARY CARDS (8 cards, 2 rows of 4, with PFS/FBA split) ──
         # Calculate splits
@@ -1977,8 +2117,7 @@ with inventory_tab:
         visible_keys = [k for k in st.session_state["inv_visible_cols"] if k in inv_filtered.columns]
         if not visible_keys:
             st.warning("No columns selected. Pick at least one in '⚙️ Customize Columns'.")
-        elif st.session_state.get("inv_view_mode", "table") == "table":
-            # ═══ TABLE VIEW ═══
+        else:
             # Rename columns to friendly labels for display
             label_map = {c["key"]: c["label"] for c in INVENTORY_COLUMNS}
             display_df = inv_filtered[visible_keys].copy()
@@ -2031,134 +2170,6 @@ with inventory_tab:
                     height=min(len(display_df) * 38 + 40, 700),
                     column_config=col_config,
                 )
-        else:
-            # ═══ CARD VIEW ═══
-            # Region filter for cards
-            card_region_options = ["Both (GB + EU)", "GB only", "EU only"]
-            if "inv_card_region" not in st.session_state:
-                st.session_state["inv_card_region"] = "Both (GB + EU)"
-            crc1, crc2 = st.columns([1, 5])
-            with crc1:
-                card_region = st.selectbox("Region", card_region_options,
-                                            index=card_region_options.index(st.session_state["inv_card_region"]),
-                                            key="inv_card_region_sel", label_visibility="collapsed")
-                st.session_state["inv_card_region"] = card_region
-
-            # Card columns config
-            with st.expander("⚙️ Card Columns — pick which metrics show on each card", expanded=False):
-                if "inv_card_cols" not in st.session_state:
-                    # Default: just the core 5 columns
-                    st.session_state["inv_card_cols"] = ["FULFILLABLE", "STOW_PICKABLE_QTY", "PFS_RESERVED", "ACTUAL_AVAILABLE_QTY", "UNFULFILLABLE"]
-
-                # Filter to numeric/categorical metric columns (skip identifiers)
-                card_col_options = [c for c in INVENTORY_COLUMNS if c["type"] == "num" or c["key"] in ("INVENTORY_POOL", "DNO_STATUS")]
-                label_to_key_card = {c["label"]: c["key"] for c in card_col_options}
-                key_to_label_card = {c["key"]: c["label"] for c in card_col_options}
-                current_card_labels = [key_to_label_card[k] for k in st.session_state["inv_card_cols"] if k in key_to_label_card]
-
-                selected_card_labels = st.multiselect(
-                    "Metrics to show on each card",
-                    options=[c["label"] for c in card_col_options],
-                    default=current_card_labels,
-                    key="inv_card_cols_select",
-                )
-                st.session_state["inv_card_cols"] = [label_to_key_card[lbl] for lbl in selected_card_labels]
-
-            # Filter inv_filtered by region selection
-            if card_region == "GB only":
-                inv_for_cards = inv_filtered[inv_filtered["REGION"] == "GB"]
-            elif card_region == "EU only":
-                inv_for_cards = inv_filtered[inv_filtered["REGION"] == "EU"]
-            else:
-                inv_for_cards = inv_filtered
-
-            unique_masters_in_view = inv_for_cards["MASTER_ID"].dropna().unique().tolist()
-            st.caption(f"Showing **{len(unique_masters_in_view)}** Master IDs in {card_region}")
-
-            if not unique_masters_in_view:
-                st.info("No data matches the current filter.")
-            else:
-                card_cols_to_show = st.session_state.get("inv_card_cols", [])
-                key_to_label_all = {c["key"]: c["label"] for c in INVENTORY_COLUMNS}
-
-                for master_id in unique_masters_in_view[:50]:  # cap at 50 cards for performance
-                    master_rows = inv_for_cards[inv_for_cards["MASTER_ID"] == master_id]
-                    # Get header info from first row
-                    first = master_rows.iloc[0]
-                    title = str(first.get("TITLE", "") or "")[:80]
-                    vendor = str(first.get("VENDOR", "") or "")
-                    part_no = str(first.get("PART_NUMBER", "") or "")
-                    asin = str(first.get("ASIN", "") or "")
-                    is_dno_any = (master_rows["DNO_STATUS"].astype(str).str.upper() == "TRUE").any()
-
-                    # Build card header
-                    border_left = "border-left: 4px solid #f85149;" if is_dno_any else "border-left: 4px solid #3fb950;"
-                    card_html = (
-                        f'<div style="background:#161b22; border:1px solid #30363d; {border_left} border-radius:10px; padding:16px 20px; margin-bottom:12px;">'
-                        f'<div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:8px;">'
-                        f'<div><div style="font-size:14px; font-weight:700; color:#fff;">{master_id}</div>'
-                        f'<div style="font-size:13px; color:#c9d1d9; margin-top:2px;">{title}</div>'
-                        f'<div style="font-size:11px; color:#7d8590; font-family:monospace; margin-top:4px;">{part_no} · {asin} · {vendor}</div></div>'
-                    )
-                    if is_dno_any:
-                        card_html += '<div style="background:rgba(239,68,68,0.18); color:#f85149; padding:4px 10px; border-radius:10px; font-size:11px; font-weight:700;">⛔ DNO</div>'
-                    card_html += '</div>'
-
-                    # Now render per-region sections
-                    regions_in_master = sorted(master_rows["REGION"].dropna().unique().tolist())
-                    if card_region == "GB only":
-                        regions_in_master = [r for r in regions_in_master if r == "GB"]
-                    elif card_region == "EU only":
-                        regions_in_master = [r for r in regions_in_master if r == "EU"]
-
-                    if len(regions_in_master) > 1 and card_region == "Both (GB + EU)":
-                        card_html += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:10px;">'
-                    else:
-                        card_html += '<div style="margin-top:10px;">'
-
-                    for region in regions_in_master:
-                        region_rows = master_rows[master_rows["REGION"] == region]
-                        flag = "🇬🇧" if region == "GB" else "🇪🇺"
-                        card_html += f'<div style="background:#0d1117; border:1px solid #30363d; border-radius:8px; padding:10px 14px;">'
-                        card_html += f'<div style="font-size:11px; color:#94a3b8; font-weight:700; margin-bottom:8px;">{flag} {region}</div>'
-
-                        for _, row in region_rows.iterrows():
-                            network = row.get("FULFILLMENT_NETWORK", "")
-                            pool = row.get("INVENTORY_POOL", "")
-                            net_color = "#ec4899" if network == "Pattern PFS" else "#f59e0b"
-                            card_html += f'<div style="margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid rgba(255,255,255,0.05);">'
-                            card_html += f'<div style="font-size:11px; color:{net_color}; font-weight:600; margin-bottom:4px;">{network} — {pool}</div>'
-                            for col_key in card_cols_to_show:
-                                if col_key in row.index:
-                                    val = row[col_key]
-                                    if pd.notna(val):
-                                        label = key_to_label_all.get(col_key, col_key)
-                                        # Color for Actual Available
-                                        v_color = "#c9d1d9"
-                                        v_extra = ""
-                                        if col_key == "ACTUAL_AVAILABLE_QTY":
-                                            try:
-                                                v_num = float(val)
-                                                if v_num < 0:
-                                                    v_color = "#f59e0b"
-                                                    v_extra = " font-weight:700;"
-                                                elif v_num > 0:
-                                                    v_color = "#3fb950"
-                                                    v_extra = " font-weight:700;"
-                                            except (ValueError, TypeError):
-                                                pass
-                                        try:
-                                            val_display = f"{int(float(val)):,}" if str(val).replace(".", "").replace("-", "").isdigit() else str(val)
-                                        except (ValueError, TypeError):
-                                            val_display = str(val)
-                                        card_html += f'<div style="display:flex; justify-content:space-between; font-size:12px; padding:2px 0;"><span style="color:#94a3b8;">{label}</span><span style="color:{v_color};{v_extra}">{val_display}</span></div>'
-                            card_html += '</div>'
-                        card_html += '</div>'
-                    card_html += '</div></div>'
-                    st.markdown(card_html, unsafe_allow_html=True)
-
-                if len(unique_masters_in_view) > 50:
-                    st.info(f"📌 Showing first 50 of {len(unique_masters_in_view)} Master IDs. Use filters to narrow down.")
 
         # ── QUICK COPY ──
         st.markdown("")
