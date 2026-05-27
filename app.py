@@ -295,6 +295,224 @@ def get_vendor_list():
     return df["VENDOR"].tolist()
 
 
+# ══════════════════════════════════════════════
+# FR Check — Functional Readiness query & rules
+# ══════════════════════════════════════════════
+FR_ATTRIBUTES = [
+    {"id": "LISTING_IS_COMMINGLED", "label": "Commingled", "type": "check"},
+    {"id": "IS_ACTIVE", "label": "Is Active", "type": "check"},
+    {"id": "MARKETPLACE_COUNTRY_CODE", "label": "Country Code", "type": "info"},
+    {"id": "PRODUCT_DIMENSIONS", "label": "Product Dimensions", "type": "info"},
+    {"id": "CASEPACK_DIMENSIONS", "label": "Casepack Dimensions", "type": "info"},
+    {"id": "IS_HAZMAT", "label": "Is Hazmat", "type": "info"},
+    {"id": "LISTING_IS_SHIPABLE", "label": "Is Shipable", "type": "check"},
+    {"id": "LISTING_PREP_PLAN_ID", "label": "Listing Prep Plan ID", "type": "check"},
+    {"id": "ITEM_PREP_PLAN_ID", "label": "Item Prep Plan ID", "type": "check"},
+    {"id": "CAN_EXPIRE", "label": "Can Expire", "type": "check"},
+    {"id": "IS_GLASS", "label": "Is Glass", "type": "check"},
+    {"id": "CATALOG_DNO_STATUS", "label": "DNO Status", "type": "check"},
+    {"id": "IS_TEMPORARY", "label": "Is Temporary", "type": "info"},
+    {"id": "MARKETPLACE_SECONDARY_ID_TYPE", "label": "Secondary ID Type", "type": "info"},
+]
+
+
+def build_fr_query(ids, id_type="LISTING_ID"):
+    """Build query for FR Check — pulls catalogue data live from Snowflake.
+    id_type: 'LISTING_ID' or 'SKU' (MARKETPLACE_PRIMARY_ID)
+    """
+    def safe(s): return s.strip().replace("'", "''")
+    upper_list = ", ".join(f"UPPER('{safe(s)}')" for s in ids if s.strip())
+
+    if id_type == "SKU":
+        where_clause = f"WHERE UPPER(pc.MARKETPLACE_PRIMARY_ID) IN ({upper_list})"
+    else:  # LISTING_ID
+        where_clause = f"WHERE UPPER(pc.LISTING_ID) IN ({upper_list})"
+
+    return f"""
+SELECT
+    pc.LISTING_ID,
+    pc.MARKETPLACE_PRIMARY_ID AS SKU,
+    pc.MARKETPLACE_SECONDARY_ID,
+    pc.MARKETPLACE_SECONDARY_ID_TYPE,
+    pc.MARKETPLACE_NAME AS MARKETPLACE,
+    pc.MARKETPLACE_COUNTRY_CODE,
+    pc.VENDOR_NAME AS VENDOR,
+    pc.PRODUCT_NAME,
+    pc.IS_ACTIVE,
+    pc.IS_DISCONTINUED,
+    pc.LISTING_IS_SHIPABLE,
+    pc.CAN_EXPIRE,
+    pc.IS_HAZMAT,
+    pc.IS_GLASS,
+    pc.LISTING_PREP_PLAN_ID,
+    pc.PRODUCT_DIMENSIONS,
+    pc.CASEPACK_DIMENSIONS,
+    pcl.LISTING_IS_COMMINGLED,
+    dno.CATALOG_DNO_STATUS,
+    dno.IS_TEMPORARY,
+    li.ITEM_PREP_PLAN_ID
+FROM PATTERN_DB.PUBLIC.PRODUCT_CATALOG_PRODUCTS_AND_LISTINGS_VIEW pc
+LEFT JOIN PATTERN_DB.PUBLIC.PRODUCT_CATALOG_PRODUCTS_AND_LISTINGS_VIEW_LITE pcl
+    ON pc.LISTING_ID = pcl.LISTING_ID
+LEFT JOIN PATTERN_DB.PUBLIC.PRODUCT_CATALOG_CURRENT_DNO_STATUS dno
+    ON pc.LISTING_ID = dno.LISTING_ID
+LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__LISTINGS li
+    ON pc.LISTING_ID = li.LISTING_ID
+{where_clause}
+"""
+
+
+def run_fr_lookup(ids, id_type="LISTING_ID"):
+    conn = get_connection()
+    return pd.read_sql(build_fr_query(ids, id_type), conn)
+
+
+# ── Validation engine (ported from HTML tool) ──
+def _lo(v):
+    return str(v or "").strip().lower()
+
+
+def _is_y(v):
+    s = _lo(v)
+    return s in ("true", "yes", "y")
+
+
+def _is_blank(v):
+    return _lo(v) == ""
+
+
+def _linked_check(row):
+    """Commingled + Glass + Prep Plan linked rule.
+    Returns dict with ok (bool) and why (str).
+    """
+    cm = _is_y(row.get("LISTING_IS_COMMINGLED", ""))
+    sid = str(row.get("MARKETPLACE_SECONDARY_ID", "") or "").strip()
+    b0 = sid.startswith("B0")
+    gl = _is_y(row.get("IS_GLASS", ""))
+    lp = str(row.get("LISTING_PREP_PLAN_ID", "") or "").strip()
+    ip = str(row.get("ITEM_PREP_PLAN_ID", "") or "").strip()
+
+    def has_plan(v):
+        return v and v != "0" and _lo(v) not in ("false", "no", "none")
+
+    has_any_plan = has_plan(lp) or has_plan(ip)
+
+    # Bypass: Commingled + B0 + Glass=N -> auto-pass
+    if cm and b0 and not gl:
+        return {"ok": True, "why": "Comm+B0+NoGlass — bypass"}
+    if has_any_plan:
+        return {"ok": True, "why": "Prep plan filled"}
+    return {"ok": False, "why": "Prep plan required"}
+
+
+def evaluate_attribute(attr_id, row):
+    """Evaluate one attribute for one row.
+    Returns dict: {status: 'g'/'r'/'i'/'n', text: str, value: str}
+    g = green/pass, r = red/fail, i = info, n = not applicable
+    """
+    v = str(row.get(attr_id, "") or "").strip()
+    vl = _lo(v)
+    sid = str(row.get("MARKETPLACE_SECONDARY_ID", "") or "").strip()
+
+    if attr_id == "LISTING_IS_COMMINGLED":
+        lc = _linked_check(row)
+        pfx = sid[:2] if sid else "—"
+        if lc["ok"]:
+            return {"status": "g", "text": f"Commingled={v or '—'} / {pfx} ✓ ({lc['why']})", "value": v}
+        return {"status": "r", "text": f"Commingled={v or '—'} / {pfx} — {lc['why']}", "value": v}
+
+    if attr_id == "IS_ACTIVE":
+        if _is_y(v):
+            return {"status": "g", "text": "Active ✓", "value": v}
+        return {"status": "r", "text": "Inactive / blank", "value": v}
+
+    if attr_id == "MARKETPLACE_COUNTRY_CODE":
+        return {"status": "i", "text": v or "—", "value": v}
+
+    if attr_id == "PRODUCT_DIMENSIONS":
+        return {"status": "i", "text": v or "—", "value": v}
+
+    if attr_id == "CASEPACK_DIMENSIONS":
+        return {"status": "i", "text": v or "—", "value": v}
+
+    if attr_id == "IS_HAZMAT":
+        return {"status": "i", "text": v or "—", "value": v}
+
+    if attr_id == "LISTING_IS_SHIPABLE":
+        if _is_y(v):
+            return {"status": "g", "text": "Shipable ✓", "value": v}
+        return {"status": "r", "text": "Not shipable", "value": v}
+
+    if attr_id == "LISTING_PREP_PLAN_ID":
+        lc = _linked_check(row)
+        if lc["ok"]:
+            return {"status": "g", "text": f"Listing Plan: {v or '—'} ✓ ({lc['why']})", "value": v}
+        return {"status": "r", "text": f"Listing Plan: {v or 'blank'} — {lc['why']}", "value": v}
+
+    if attr_id == "ITEM_PREP_PLAN_ID":
+        lc = _linked_check(row)
+        if lc["ok"]:
+            return {"status": "g", "text": f"Item Plan: {v or '—'} ✓ ({lc['why']})", "value": v}
+        return {"status": "r", "text": f"Item Plan: {v or 'blank'} — {lc['why']}", "value": v}
+
+    if attr_id == "CAN_EXPIRE":
+        # Simple pass for any non-blank, blank also passes (no LE partner field available)
+        return {"status": "g", "text": f"Can Expire: {v or 'blank'} ✓", "value": v}
+
+    if attr_id == "IS_GLASS":
+        lc = _linked_check(row)
+        if lc["ok"]:
+            return {"status": "g", "text": f"Glass={v or '—'} ✓ ({lc['why']})", "value": v}
+        return {"status": "r", "text": f"Glass={v or '—'} — {lc['why']}", "value": v}
+
+    if attr_id == "CATALOG_DNO_STATUS":
+        if vl == "dno" or _is_y(v):
+            return {"status": "r", "text": "DNO active ⚠", "value": v}
+        return {"status": "g", "text": "Not DNO ✓", "value": v}
+
+    if attr_id == "IS_TEMPORARY":
+        return {"status": "i", "text": v or "—", "value": v}
+
+    if attr_id == "MARKETPLACE_SECONDARY_ID_TYPE":
+        return {"status": "i", "text": v or "—", "value": v}
+
+    return {"status": "n", "text": v or "—", "value": v}
+
+
+def run_fr_check(df, selected_attrs):
+    """Run FR check on each row, return list of result dicts."""
+    results = []
+    for _, row in df.iterrows():
+        row_results = {}
+        green_count = 0
+        red_count = 0
+        info_count = 0
+        for attr in selected_attrs:
+            res = evaluate_attribute(attr, row)
+            row_results[attr] = res
+            if res["status"] == "g":
+                green_count += 1
+            elif res["status"] == "r":
+                red_count += 1
+            elif res["status"] == "i":
+                info_count += 1
+        results.append({
+            "listing_id": row.get("LISTING_ID", ""),
+            "sku": row.get("SKU", ""),
+            "product_name": row.get("PRODUCT_NAME", ""),
+            "marketplace": row.get("MARKETPLACE", ""),
+            "country_code": row.get("MARKETPLACE_COUNTRY_CODE", ""),
+            "vendor": row.get("VENDOR", ""),
+            "passed": red_count == 0,
+            "green_count": green_count,
+            "red_count": red_count,
+            "info_count": info_count,
+            "details": row_results,
+            "raw_row": row.to_dict(),
+        })
+    return results
+
+
 def multiselect_filter(df, column, label, key):
     unique_vals = sorted(df[column].dropna().unique().tolist())
     if not unique_vals:
@@ -422,7 +640,7 @@ REGION_MAP = {
 # ══════════════════════════════════════════════
 # Input + Results in tabs
 # ══════════════════════════════════════════════
-input_tab, brand_tab, results_tab = st.tabs(["🔍 Search by ID", "🏷️ Browse by Brand", "📊 Results"])
+input_tab, brand_tab, fr_tab, results_tab = st.tabs(["🔍 Search by ID", "🏷️ Browse by Brand", "🔬 FR Check", "📊 Results"])
 
 with input_tab:
     st.markdown("")
@@ -558,6 +776,310 @@ with brand_tab:
                 st.error(f"Query failed: {e}")
     else:
         st.info("👆 Select a brand to get started.")
+
+
+with fr_tab:
+    st.markdown("")
+    st.markdown("#### 🔬 Functional Readiness Check")
+    st.caption("Validate listing attributes against Pattern's readiness rules. Paste identifiers below, choose what to check, and get pass/fail per listing.")
+
+    # ── Step 1: Input ──
+    st.markdown("##### Step 1 — Enter Identifiers")
+    fr_col1, fr_col2 = st.columns([1, 3])
+    with fr_col1:
+        fr_id_type = st.radio("Identifier type", ["Listing ID", "SKU"], key="fr_id_type", horizontal=True)
+    with fr_col2:
+        fr_text = st.text_area(
+            "Paste identifiers (one per line, or comma/space separated)",
+            placeholder="e.g.\nL0NC2POW\nL09SMWN7\nL05RO0W8",
+            height=140, key="fr_text",
+        )
+
+    # Parse identifiers
+    fr_ids = []
+    if fr_text.strip():
+        # Support comma, newline, space, tab separators
+        import re
+        fr_ids = [s.strip() for s in re.split(r"[\n,\s\t]+", fr_text.strip()) if s.strip()]
+        # Dedupe while preserving order
+        seen = set()
+        fr_ids = [x for x in fr_ids if not (x in seen or seen.add(x))]
+    st.caption(f"{len(fr_ids)} unique identifier(s) entered • Max 500")
+
+    # ── Step 2: Attribute selector ──
+    st.markdown("##### Step 2 — Choose Attributes to Check")
+
+    # Initialize selected attrs in session state
+    if "fr_selected_attrs" not in st.session_state:
+        st.session_state["fr_selected_attrs"] = [a["id"] for a in FR_ATTRIBUTES]
+
+    # Preset buttons
+    preset_col1, preset_col2, preset_col3, preset_col4, _ = st.columns([1, 1, 1, 1, 4])
+    with preset_col1:
+        if st.button("All", key="fr_all", use_container_width=True):
+            st.session_state["fr_selected_attrs"] = [a["id"] for a in FR_ATTRIBUTES]
+            st.rerun()
+    with preset_col2:
+        if st.button("None", key="fr_none", use_container_width=True):
+            st.session_state["fr_selected_attrs"] = []
+            st.rerun()
+    with preset_col3:
+        if st.button("Checks", key="fr_checks", use_container_width=True):
+            st.session_state["fr_selected_attrs"] = [a["id"] for a in FR_ATTRIBUTES if a["type"] == "check"]
+            st.rerun()
+    with preset_col4:
+        if st.button("Info", key="fr_info", use_container_width=True):
+            st.session_state["fr_selected_attrs"] = [a["id"] for a in FR_ATTRIBUTES if a["type"] == "info"]
+            st.rerun()
+
+    # Multi-select with friendly labels
+    attr_label_map = {a["label"]: a["id"] for a in FR_ATTRIBUTES}
+    attr_id_to_label = {a["id"]: a["label"] for a in FR_ATTRIBUTES}
+    default_labels = [attr_id_to_label[aid] for aid in st.session_state["fr_selected_attrs"] if aid in attr_id_to_label]
+
+    selected_labels = st.multiselect(
+        "Attributes",
+        options=[a["label"] for a in FR_ATTRIBUTES],
+        default=default_labels,
+        key="fr_attr_select",
+        label_visibility="collapsed",
+    )
+    selected_attr_ids = [attr_label_map[lbl] for lbl in selected_labels]
+    st.session_state["fr_selected_attrs"] = selected_attr_ids
+    st.caption(f"{len(selected_attr_ids)} attribute(s) selected")
+
+    # ── Step 3: Run ──
+    st.markdown("")
+    if fr_ids and selected_attr_ids:
+        if len(fr_ids) > 500:
+            st.warning("⚠️ Max 500 identifiers. Only the first 500 will be processed.")
+            fr_ids = fr_ids[:500]
+
+        if st.button("▶ Run FR Check", type="primary", use_container_width=True, key="fr_run"):
+            progress_bar = st.progress(0, text="Connecting to Snowflake...")
+            time.sleep(0.2)
+            progress_bar.progress(20, text=f"Fetching catalogue data for {len(fr_ids)} listing(s)...")
+
+            try:
+                id_type = "SKU" if fr_id_type == "SKU" else "LISTING_ID"
+                fr_df = run_fr_lookup(fr_ids, id_type)
+                progress_bar.progress(60, text="Running validation rules...")
+                time.sleep(0.2)
+
+                if fr_df.empty:
+                    progress_bar.progress(100, text="No results found.")
+                    st.warning(f"No catalogue data found for the given {fr_id_type}s.")
+                    st.session_state.pop("fr_results", None)
+                else:
+                    fr_results = run_fr_check(fr_df, selected_attr_ids)
+                    progress_bar.progress(100, text=f"Done — checked {len(fr_results)} listing(s)!")
+                    st.session_state["fr_results"] = fr_results
+                    st.session_state["fr_selected_attrs_at_run"] = selected_attr_ids
+                    st.session_state["fr_input_ids"] = fr_ids
+
+                    passed = sum(1 for r in fr_results if r["passed"])
+                    flagged = len(fr_results) - passed
+                    st.success(f"✅ Checked **{len(fr_results)}** listings • **{passed}** passed • **{flagged}** flagged")
+
+                time.sleep(0.3)
+                progress_bar.empty()
+            except Exception as e:
+                progress_bar.empty()
+                st.error(f"FR Check failed: {e}")
+    elif fr_ids and not selected_attr_ids:
+        st.info("Select at least one attribute to check.")
+    elif not fr_ids:
+        st.info("👆 Enter at least one identifier to begin.")
+
+    # ── Step 4: Show results ──
+    if "fr_results" in st.session_state and st.session_state["fr_results"]:
+        results = st.session_state["fr_results"]
+        attrs_at_run = st.session_state.get("fr_selected_attrs_at_run", [])
+        input_ids = st.session_state.get("fr_input_ids", [])
+
+        st.markdown("---")
+        st.markdown("##### Results")
+
+        # Summary metrics
+        total = len(results)
+        passed = sum(1 for r in results if r["passed"])
+        flagged = total - passed
+        # Find missing items (entered but not returned)
+        found_ids = set()
+        for r in results:
+            found_ids.add(str(r.get("listing_id", "")).upper())
+            found_ids.add(str(r.get("sku", "")).upper())
+        missing_ids = [i for i in input_ids if i.upper() not in found_ids]
+
+        m1, m2, m3, m4 = st.columns(4)
+        with m1: st.markdown(f'<div class="metric-card mc-total"><div class="label">Total Checked</div><div class="value">{total}</div></div>', unsafe_allow_html=True)
+        with m2: st.markdown(f'<div class="metric-card mc-ship"><div class="label">Passed</div><div class="value">{passed}</div></div>', unsafe_allow_html=True)
+        with m3: st.markdown(f'<div class="metric-card mc-dno"><div class="label">Flagged</div><div class="value">{flagged}</div></div>', unsafe_allow_html=True)
+        with m4: st.markdown(f'<div class="metric-card mc-noship"><div class="label">Not Found</div><div class="value">{len(missing_ids)}</div></div>', unsafe_allow_html=True)
+
+        st.markdown("")
+
+        # Missing items
+        if missing_ids:
+            with st.expander(f"⚠️ {len(missing_ids)} identifier(s) not found in catalogue", expanded=False):
+                missing_html = "".join(f'<span class="missing-item">{m}</span>' for m in missing_ids)
+                st.markdown(missing_html, unsafe_allow_html=True)
+
+        # Filter
+        fc1, fc2, _ = st.columns([1, 1, 4])
+        with fc1:
+            fr_filter = st.radio("Show", ["All", "Passed", "Flagged"], key="fr_filter", horizontal=True)
+
+        # Filtered results
+        if fr_filter == "Passed":
+            shown = [r for r in results if r["passed"]]
+        elif fr_filter == "Flagged":
+            shown = [r for r in results if not r["passed"]]
+        else:
+            shown = results
+
+        st.caption(f"Showing **{len(shown)}** of **{len(results)}** results")
+
+        # Build display dataframe
+        display_rows = []
+        for r in shown:
+            row_data = {
+                "Listing ID": r["listing_id"],
+                "SKU": r["sku"],
+                "Product Name": str(r["product_name"])[:60] if r["product_name"] else "",
+                "Marketplace": r["marketplace"],
+                "Country": r["country_code"],
+                "Vendor": r["vendor"],
+                "Status": "✅ Passed" if r["passed"] else f"⛔ Flagged ({r['red_count']})",
+            }
+            # Add each attribute's status
+            for attr_id in attrs_at_run:
+                attr_label = attr_id_to_label.get(attr_id, attr_id)
+                det = r["details"].get(attr_id, {})
+                status = det.get("status", "n")
+                icon = {"g": "✅", "r": "⛔", "i": "ℹ️", "n": "—"}.get(status, "—")
+                value = det.get("value", "") or "—"
+                row_data[attr_label] = f"{icon} {value}"
+            display_rows.append(row_data)
+
+        display_fr_df = pd.DataFrame(display_rows)
+
+        # Color rows: red for flagged
+        def fr_color_rows(row):
+            if "Status" in row.index and "Flagged" in str(row.get("Status", "")):
+                return ["background-color: rgba(239,68,68,0.08)"] * len(row)
+            if "Status" in row.index and "Passed" in str(row.get("Status", "")):
+                return ["background-color: rgba(34,197,94,0.05)"] * len(row)
+            return [""] * len(row)
+
+        if len(display_fr_df) > 5000:
+            st.dataframe(display_fr_df, use_container_width=True, hide_index=True, height=600)
+        else:
+            st.dataframe(
+                display_fr_df.style.apply(fr_color_rows, axis=1),
+                use_container_width=True, hide_index=True,
+                height=min(len(display_fr_df) * 38 + 40, 600),
+            )
+
+        # Detail view for one listing
+        with st.expander("🔍 Drill down into a specific listing"):
+            if shown:
+                drill_options = [f"{r['listing_id']} — {str(r['product_name'])[:40]}" for r in shown]
+                drill_choice = st.selectbox("Pick a listing", drill_options, key="fr_drill")
+                if drill_choice:
+                    drill_idx = drill_options.index(drill_choice)
+                    drill = shown[drill_idx]
+                    st.markdown(f"**{drill['listing_id']}** • {drill['sku']} • {drill['marketplace']}")
+                    detail_rows = []
+                    for attr_id in attrs_at_run:
+                        attr_label = attr_id_to_label.get(attr_id, attr_id)
+                        det = drill["details"].get(attr_id, {})
+                        status = det.get("status", "n")
+                        icon = {"g": "✅ Pass", "r": "⛔ Fail", "i": "ℹ️ Info", "n": "—"}.get(status, "—")
+                        detail_rows.append({
+                            "Attribute": attr_label,
+                            "Value": det.get("value", "") or "—",
+                            "Status": icon,
+                            "Note": det.get("text", ""),
+                        })
+                    st.dataframe(pd.DataFrame(detail_rows), use_container_width=True, hide_index=True)
+
+        # Exports
+        st.markdown("")
+        st.markdown("##### Export")
+        ex_c1, ex_c2, ex_c3 = st.columns(3)
+
+        # Build export dataframes
+        def build_export_df(rows_filter):
+            """rows_filter: 'pass' or 'fail'"""
+            rows_out = []
+            for r in results:
+                if rows_filter == "pass" and not r["passed"]:
+                    continue
+                if rows_filter == "fail" and r["passed"]:
+                    continue
+                base = {
+                    "Listing ID": r["listing_id"],
+                    "SKU": r["sku"],
+                    "Product Name": r["product_name"],
+                    "Marketplace": r["marketplace"],
+                    "Country": r["country_code"],
+                    "Vendor": r["vendor"],
+                }
+                for attr_id in attrs_at_run:
+                    label = attr_id_to_label.get(attr_id, attr_id)
+                    det = r["details"].get(attr_id, {})
+                    # In Passed export, fill only Pass/Info cells. In Flagged, only Fail.
+                    if rows_filter == "pass":
+                        if det.get("status") in ("g", "i"):
+                            base[f"{label} — Value"] = det.get("value", "")
+                            base[f"{label} — Status"] = "Pass" if det["status"] == "g" else "Info"
+                            base[f"{label} — Note"] = det.get("text", "")
+                        else:
+                            base[f"{label} — Value"] = ""
+                            base[f"{label} — Status"] = ""
+                            base[f"{label} — Note"] = ""
+                    else:  # fail
+                        if det.get("status") == "r":
+                            base[f"{label} — Value"] = det.get("value", "")
+                            base[f"{label} — Status"] = "Fail"
+                            base[f"{label} — Note"] = det.get("text", "")
+                        else:
+                            base[f"{label} — Value"] = ""
+                            base[f"{label} — Status"] = ""
+                            base[f"{label} — Note"] = ""
+                rows_out.append(base)
+            return pd.DataFrame(rows_out)
+
+        passed_df = build_export_df("pass")
+        flagged_df = build_export_df("fail")
+
+        with ex_c1:
+            st.download_button(
+                f"⬇️ Passed ({len(passed_df)}) — CSV",
+                passed_df.to_csv(index=False),
+                f"fr_passed_{datetime.date.today().isoformat()}.csv",
+                "text/csv", use_container_width=True,
+            )
+        with ex_c2:
+            st.download_button(
+                f"⬇️ Flagged ({len(flagged_df)}) — CSV",
+                flagged_df.to_csv(index=False),
+                f"fr_flagged_{datetime.date.today().isoformat()}.csv",
+                "text/csv", use_container_width=True,
+            )
+        with ex_c3:
+            buf = io.BytesIO()
+            with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                passed_df.to_excel(writer, sheet_name="Passed", index=False)
+                flagged_df.to_excel(writer, sheet_name="Flagged", index=False)
+            st.download_button(
+                "⬇️ Both — Excel (2 sheets)",
+                buf.getvalue(),
+                f"fr_check_{datetime.date.today().isoformat()}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
 
 
 with results_tab:
