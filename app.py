@@ -253,7 +253,6 @@ q2 AS (
     -- PUSHED-DOWN FILTER: only fetch catalog rows that match the user's input on any identifier
     WHERE UPPER(pc.MARKETPLACE_PRIMARY_ID) IN ({upper_list})
        OR UPPER(pc.LISTING_ID) IN ({upper_list})
-       OR UPPER(pc.PARTNER_ID) IN ({upper_list})
        OR UPPER(pc.UPC) IN ({upper_list})
        OR UPPER(pc.EAN) IN ({upper_list})
 ),
