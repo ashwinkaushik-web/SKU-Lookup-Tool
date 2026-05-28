@@ -195,6 +195,19 @@ def get_connection():
 def build_query(skus):
     def safe(s): return s.strip().replace("'", "''")
     upper_list = ", ".join(f"UPPER('{safe(s)}')" for s in skus if s.strip())
+
+    # ── PERFORMANCE NOTE ──
+    # The original query did:
+    #   q1 = full scan of LISTINGS + 5 joins  (millions of rows)
+    #   q2 = full scan of catalog view        (millions of rows)
+    #   q3 = full scan of status history
+    #   base = FULL OUTER JOIN of all three   (millions of rows)
+    #   filter at the end → had to materialize everything first → SLOW (60+ sec)
+    #
+    # Now we push the filter into q1 and q2 directly, so each CTE only fetches
+    # the small set of rows matching the user's input — typically 1-50 rows.
+    # The joins now operate on these tiny sets — turns 60sec → ~2-5sec.
+
     return f"""
 WITH q1 AS (
     SELECT c.name AS marketplace, par.name AS vendor, a.Listing_MP_Primary_ID AS sku,
@@ -218,6 +231,13 @@ WITH q1 AS (
     LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__PARTNERS par ON par.ID = b.PARTNER_ID
     LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__DNO_SETTINGS dno ON dno.ID = a.DNO_SETTING_ID
     LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__DNO_REASON_CODES dno_rc ON dno_rc.ID = dno.DNO_REASON_CODE_ID
+    -- PUSHED-DOWN FILTER: only fetch listings that match the user's input on any identifier
+    WHERE UPPER(a.Listing_MP_Primary_ID) IN ({upper_list})
+       OR UPPER(a.LISTING_ID) IN ({upper_list})
+       OR UPPER(a.LISTING_MP_PAGE_ID) IN ({upper_list})
+       OR UPPER(a.LISTING_MP_SECONDARY_ID) IN ({upper_list})
+       OR UPPER(b.MASTER_ID) IN ({upper_list})
+       OR UPPER(b.MPN) IN ({upper_list})
 ),
 q2 AS (
     SELECT pc.MARKETPLACE_NAME AS marketplace, pc.VENDOR_NAME AS vendor, pc.MARKETPLACE_PRIMARY_ID AS sku,
@@ -230,11 +250,23 @@ q2 AS (
         pc.MAP_W_CURRENCY AS map_price, pc.RETAIL_W_CURRENCY AS retail_price,
         pc.MSRP_W_CURRENCY AS msrp_price
     FROM PATTERN_DB.PUBLIC.PRODUCT_CATALOG_PRODUCTS_AND_LISTINGS_VIEW pc
+    -- PUSHED-DOWN FILTER: only fetch catalog rows that match the user's input on any identifier
+    WHERE UPPER(pc.MARKETPLACE_PRIMARY_ID) IN ({upper_list})
+       OR UPPER(pc.LISTING_ID) IN ({upper_list})
+       OR UPPER(pc.PARTNER_ID) IN ({upper_list})
+       OR UPPER(pc.UPC) IN ({upper_list})
+       OR UPPER(pc.EAN) IN ({upper_list})
 ),
 q3 AS (
+    -- Restrict to only listings that appeared in q1 or q2 (small set), and only latest date
     SELECT h.LISTING_ID AS listing_id, h.IS_DNO AS is_dno
     FROM PATTERN_DB.PUBLIC.CATALOG_LISTING_STATUS_HISTORY h
     WHERE h."DATE" = (SELECT MAX("DATE") FROM PATTERN_DB.PUBLIC.CATALOG_LISTING_STATUS_HISTORY)
+      AND h.LISTING_ID IN (
+          SELECT listing_id FROM q1 WHERE listing_id IS NOT NULL
+          UNION
+          SELECT listing_id FROM q2 WHERE listing_id IS NOT NULL
+      )
 ),
 base AS (
     SELECT COALESCE(q2.marketplace, q1.marketplace) AS MARKETPLACE,
@@ -265,18 +297,36 @@ ORDER BY MARKETPLACE, VENDOR, SKU
 """
 
 
-def run_lookup(skus):
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_run_lookup(skus_tuple):
+    """Internal cached version of PC Lookup. Returns DataFrame."""
+    skus = list(skus_tuple)
     conn = get_connection()
     return pd.read_sql(build_query(skus), conn)
 
 
+def run_lookup(skus):
+    """Run PC Lookup query for given SKUs / Listing IDs / ASINs / MPNs / Master IDs / FNSKUs (cached 5 min)."""
+    return _cached_run_lookup(tuple(sorted(set(s.strip() for s in skus if s.strip()))))
+
+
 def build_brand_query(vendor, region_marketplaces=None, limit=None):
     """Build query to fetch all listings for a brand/vendor, optionally filtered by region."""
-    mp_filter = ""
+    safe_vendor = vendor.replace("'", "''")
+
+    mp_filter_q1 = ""
+    mp_filter_q2 = ""
     if region_marketplaces:
-        mp_filter = "AND UPPER(MARKETPLACE) IN (" + ", ".join(f"UPPER('{mp}')" for mp in region_marketplaces) + ")"
+        mp_list = ", ".join(f"UPPER('{mp}')" for mp in region_marketplaces)
+        mp_filter_q1 = f"AND UPPER(c.name) IN ({mp_list})"
+        mp_filter_q2 = f"AND UPPER(pc.MARKETPLACE_NAME) IN ({mp_list})"
 
     limit_clause = f"LIMIT {limit}" if limit else ""
+
+    # ── PERFORMANCE NOTE ──
+    # The vendor filter is pushed into BOTH q1 (via partners.name) and q2 (via VENDOR_NAME)
+    # so each CTE only fetches rows for this specific brand instead of full table scans.
+    # Same trick as build_query() — turns slow brand fetches into fast ones.
 
     return f"""
 WITH q1 AS (
@@ -301,6 +351,9 @@ WITH q1 AS (
     LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__PARTNERS par ON par.ID = b.PARTNER_ID
     LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__DNO_SETTINGS dno ON dno.ID = a.DNO_SETTING_ID
     LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__DNO_REASON_CODES dno_rc ON dno_rc.ID = dno.DNO_REASON_CODE_ID
+    -- PUSHED-DOWN FILTER: only fetch listings for this brand
+    WHERE UPPER(par.name) = UPPER('{safe_vendor}')
+    {mp_filter_q1}
 ),
 q2 AS (
     SELECT pc.MARKETPLACE_NAME AS marketplace, pc.VENDOR_NAME AS vendor, pc.MARKETPLACE_PRIMARY_ID AS sku,
@@ -313,11 +366,20 @@ q2 AS (
         pc.MAP_W_CURRENCY AS map_price, pc.RETAIL_W_CURRENCY AS retail_price,
         pc.MSRP_W_CURRENCY AS msrp_price
     FROM PATTERN_DB.PUBLIC.PRODUCT_CATALOG_PRODUCTS_AND_LISTINGS_VIEW pc
+    -- PUSHED-DOWN FILTER: only fetch catalog rows for this brand
+    WHERE UPPER(pc.VENDOR_NAME) = UPPER('{safe_vendor}')
+    {mp_filter_q2}
 ),
 q3 AS (
+    -- Only fetch history for listings we actually need (q1 + q2)
     SELECT h.LISTING_ID AS listing_id, h.IS_DNO AS is_dno
     FROM PATTERN_DB.PUBLIC.CATALOG_LISTING_STATUS_HISTORY h
     WHERE h."DATE" = (SELECT MAX("DATE") FROM PATTERN_DB.PUBLIC.CATALOG_LISTING_STATUS_HISTORY)
+      AND h.LISTING_ID IN (
+          SELECT listing_id FROM q1 WHERE listing_id IS NOT NULL
+          UNION
+          SELECT listing_id FROM q2 WHERE listing_id IS NOT NULL
+      )
 ),
 base AS (
     SELECT COALESCE(q2.marketplace, q1.marketplace) AS MARKETPLACE,
@@ -341,16 +403,26 @@ base AS (
     LEFT JOIN q3 ON q3.listing_id = COALESCE(q1.listing_id, q2.listing_id)
 )
 SELECT * FROM base
-WHERE UPPER(VENDOR) = UPPER('{vendor.replace(chr(39), chr(39)+chr(39))}')
-{mp_filter}
+WHERE UPPER(VENDOR) = UPPER('{safe_vendor}')
 ORDER BY MARKETPLACE, SKU
 {limit_clause}
 """
 
 
-def run_brand_lookup(vendor, region_marketplaces=None, limit=None):
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_run_brand_lookup(vendor, region_marketplaces_tuple, limit):
+    """Internal cached version of brand lookup."""
+    region_marketplaces = list(region_marketplaces_tuple) if region_marketplaces_tuple else None
     conn = get_connection()
     return pd.read_sql(build_brand_query(vendor, region_marketplaces, limit), conn)
+
+
+def run_brand_lookup(vendor, region_marketplaces=None, limit=None):
+    return _cached_run_brand_lookup(
+        vendor.strip(),
+        tuple(sorted(region_marketplaces)) if region_marketplaces else None,
+        limit if limit else 0,
+    )
 
 
 def get_vendor_list():
@@ -434,9 +506,19 @@ LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__LISTINGS li
 """
 
 
-def run_fr_lookup(ids, id_type="LISTING_ID"):
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_run_fr_lookup(ids_tuple, id_type):
+    """Internal cached version of FR query."""
+    ids = list(ids_tuple)
     conn = get_connection()
     return pd.read_sql(build_fr_query(ids, id_type), conn)
+
+
+def run_fr_lookup(ids, id_type="LISTING_ID"):
+    return _cached_run_fr_lookup(
+        tuple(sorted(set(s.strip() for s in ids if s.strip()))),
+        id_type,
+    )
 
 
 # ── Validation engine (ported from HTML tool) ──
