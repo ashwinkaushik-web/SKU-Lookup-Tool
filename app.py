@@ -126,31 +126,33 @@ st.markdown("""
 # Column config
 # ══════════════════════════════════════════════
 COLUMN_MAP = {
+    # ── PRIORITY COLUMNS (appear first in the table) ──
     "SKU": {"label": "SKU", "default": True},
     "LISTING_ID": {"label": "Listing ID", "default": True},
+    "ASIN": {"label": "ASIN", "default": True},
+    "MASTER_ID": {"label": "Master ID", "default": True},
+    "MPN": {"label": "MPN", "default": True},
     "MARKETPLACE": {"label": "Marketplace", "default": True},
     "VENDOR": {"label": "Vendor", "default": True},
-    "PRODUCT_NAME": {"label": "Product Name", "default": True},
-    "IS_DNO": {"label": "DNO", "default": True},
-    "SHIPPABLE_TAG": {"label": "Shippable", "default": True},
     "LISTING_FULFILLMENT_TYPE": {"label": "Fulfillment Type", "default": True},
-    "LISTING_TYPE": {"label": "Listing Type", "default": False},
-    "ASIN": {"label": "ASIN", "default": True},
-    "FNSKU": {"label": "FNSKU", "default": False},
-    "MASTER_ID": {"label": "Master ID", "default": False},
-    "MPN": {"label": "MPN", "default": False},
-    "COMMINGLED_STATUS": {"label": "Commingled", "default": False},
-    "IS_ACTIVE": {"label": "Active", "default": True},
-    "IS_DISCONTINUED": {"label": "Discontinued", "default": False},
-    "UPC": {"label": "UPC", "default": False},
-    "EAN": {"label": "EAN", "default": False},
-    "CAN_EXPIRE": {"label": "Can Expire", "default": False},
-    "WHOLESALE_PRICE": {"label": "Wholesale Price", "default": False},
-    "MAP_PRICE": {"label": "MAP Price", "default": False},
-    "RETAIL_PRICE": {"label": "Retail Price", "default": False},
-    "MSRP_PRICE": {"label": "MSRP Price", "default": False},
-    "DNO_NOTE": {"label": "DNO Note", "default": True},
+    "IS_DNO": {"label": "DNO", "default": True},
     "DNO_REASON_CODE": {"label": "DNO Reason Code", "default": True},
+    "DNO_NOTE": {"label": "DNO Note", "default": True},
+    "SHIPPABLE_TAG": {"label": "Shippable", "default": True},
+    # ── SECONDARY COLUMNS (everything else) ──
+    "PRODUCT_NAME": {"label": "Product Name", "default": True},
+    "LISTING_TYPE": {"label": "Listing Type", "default": True},
+    "FNSKU": {"label": "FNSKU", "default": True},
+    "COMMINGLED_STATUS": {"label": "Commingled", "default": True},
+    "IS_ACTIVE": {"label": "Active", "default": True},
+    "IS_DISCONTINUED": {"label": "Discontinued", "default": True},
+    "UPC": {"label": "UPC", "default": True},
+    "EAN": {"label": "EAN", "default": True},
+    "CAN_EXPIRE": {"label": "Can Expire", "default": True},
+    "WHOLESALE_PRICE": {"label": "Wholesale Price", "default": True},
+    "MAP_PRICE": {"label": "MAP Price", "default": True},
+    "RETAIL_PRICE": {"label": "Retail Price", "default": True},
+    "MSRP_PRICE": {"label": "MSRP Price", "default": True},
 }
 
 BOOL_COLS = {
@@ -2425,7 +2427,7 @@ with results_tab:
         default_cols = [k for k in available_cols if COLUMN_MAP[k]["default"]]
         friendly_options = {COLUMN_MAP[k]["label"]: k for k in available_cols}
 
-        with st.expander("👁 Toggle Columns"):
+        with st.expander("👁 Show / Hide Columns"):
             selected_friendly = st.multiselect(
                 "Choose columns to display",
                 options=[COLUMN_MAP[k]["label"] for k in available_cols],
