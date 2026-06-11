@@ -688,6 +688,21 @@ WITH warehouse_stock AS (
     AND area IN ('A-MOD', 'Cage', 'F-MOD', 'B-Mod', 'BIO', 'OVERAGE', 'Shelving')
   GROUP BY WAREHOUSE_NAME, MASTER_ID
 ),
+warehouse_attrs AS (
+  -- Storage IDs + status list per (warehouse, master) from the current-warehouse table.
+  -- NOTE: no status / area filter here (unlike warehouse_stock), so STATUS reflects the
+  -- full picture for the master in that warehouse (Sellable, Reserved, Unfulfillable, ...),
+  -- not just the Sellable + pickable subset that feeds CW Inventory.
+  SELECT
+    WAREHOUSE_NAME,
+    MASTER_ID,
+    LISTAGG(DISTINCT STORAGE_ID, ', ') WITHIN GROUP (ORDER BY STORAGE_ID) AS STORAGE_IDS,
+    LISTAGG(DISTINCT STATUS, ', ')     WITHIN GROUP (ORDER BY STATUS)     AS STATUSES
+  FROM "ANALYTICS_DB"."REPORTING"."REPORT__WAREHOUSE_INVENTORY_BY_PRODUCT_CURRENT"
+  WHERE MASTER_ID IN ({master_ids})
+    AND warehouse_name IN ({warehouse_list})
+  GROUP BY WAREHOUSE_NAME, MASTER_ID
+),
 inventory_hub AS (
   SELECT
     PART_NUMBER, MASTER_ID, ASIN, ASIN_LIST,
@@ -751,11 +766,25 @@ hub_reserved_pfs_by_region AS (
 SELECT
   COALESCE(ih.MASTER_ID, wp.MASTER_ID) AS MASTER_ID,
   ih.PART_NUMBER, wp.PART_NUMBER_FINAL,
-  ih.ASIN, ih.ASIN_LIST, ih.HUB_TITLE AS TITLE,
+  -- ASIN backfill: the hub's per-row ASIN is blank for some pools (esp. multi-country
+  -- EU / Pan-EU). Fill blanks with any ASIN known for the same Master ID, then with the
+  -- first entry of ASIN_LIST. ASIN_RAW keeps the exact untouched per-pool value.
+  COALESCE(
+    ih.ASIN,
+    MAX(ih.ASIN) OVER (PARTITION BY ih.MASTER_ID),
+    SPLIT_PART(ih.ASIN_LIST, ',', 1)
+  ) AS ASIN,
+  ih.ASIN AS ASIN_RAW,
+  ih.ASIN_LIST, ih.HUB_TITLE AS TITLE,
   wp.BRAND, ih.VENDOR, wp.SNAPSHOT_DATE,
   ih.REGION, ih.INVENTORY_POOL, ih.FULFILLMENT_NETWORK,
   ih.INVENTORY_TYPE, ih.BUNDLE_TYPE, ih.DNO_STATUS,
   ih.WHOLESALE_PRICE_USD,
+  -- Current-warehouse attributes (region-aware: NH for GB, WR for EU)
+  CASE WHEN ih.REGION = 'GB' THEN 'Northampton'
+       WHEN ih.REGION = 'EU' THEN 'Wroclaw' END AS WAREHOUSE_NAME,
+  wa.STORAGE_IDS,
+  wa.STATUSES AS WAREHOUSE_STATUS,
   -- Core block (region-aware unified columns)
   ih.FULFILLABLE,
   CASE
@@ -809,6 +838,10 @@ SELECT
 FROM inventory_hub ih
 FULL OUTER JOIN warehouse_pivot wp ON ih.MASTER_ID = wp.MASTER_ID
 LEFT JOIN hub_reserved_pfs_by_region hr ON COALESCE(ih.MASTER_ID, wp.MASTER_ID) = hr.MASTER_ID
+LEFT JOIN warehouse_attrs wa
+  ON wa.MASTER_ID = COALESCE(ih.MASTER_ID, wp.MASTER_ID)
+  AND wa.WAREHOUSE_NAME = CASE WHEN ih.REGION = 'GB' THEN 'Northampton'
+                               WHEN ih.REGION = 'EU' THEN 'Wroclaw' END
 ORDER BY MASTER_ID, ih.REGION, ih.FULFILLMENT_NETWORK
 """
 
@@ -975,14 +1008,16 @@ INVENTORY_COLUMNS = [
     {"key": "MASTER_ID",            "label": "Master ID",              "default": True,  "type": "str", "group": "Identifiers", "desc": "Pattern's internal product identifier"},
     {"key": "PART_NUMBER",          "label": "Part Number",            "default": True,  "type": "str", "group": "Identifiers", "desc": "Vendor-provided SKU"},
     {"key": "PART_NUMBER_FINAL",    "label": "Part Number (WH)",       "default": False, "type": "str", "group": "Identifiers", "desc": "Final part number used in warehouse systems"},
-    {"key": "ASIN",                 "label": "ASIN",                   "default": True,  "type": "str", "group": "Identifiers", "desc": "Amazon Standard Identification Number"},
-    {"key": "ASIN_LIST",            "label": "ASIN List",              "default": False, "type": "str", "group": "Identifiers", "desc": "All ASINs linked to this Master ID"},
+    {"key": "ASIN",                 "label": "ASIN",                   "default": True,  "type": "str", "group": "Identifiers", "desc": "Amazon Standard Identification Number. Blanks are backfilled with another ASIN known for the same Master ID (or the first in ASIN List), so EU / Pan-EU rows aren't empty. See 'ASIN (raw)' for the exact per-pool value."},
+    {"key": "ASIN_RAW",             "label": "ASIN (raw)",             "default": False, "type": "str", "group": "Identifiers", "desc": "The exact ASIN the Inventory Hub holds for this specific pool row — blank where the hub has no single ASIN for that pool (common for multi-country EU pools)."},
+    {"key": "ASIN_LIST",            "label": "ASIN List",              "default": False, "type": "str", "group": "Identifiers", "desc": "All ASINs linked to this Master ID — useful for multi-country EU / Pan-EU pools where one row spans several country ASINs."},
     {"key": "TITLE",                "label": "Title",                  "default": True,  "type": "str", "group": "Identifiers", "desc": "Product title"},
     {"key": "BRAND",                "label": "Brand",                  "default": True,  "type": "str", "group": "Identifiers", "desc": "Brand name (from warehouse)"},
     {"key": "VENDOR",               "label": "Vendor",                 "default": True,  "type": "str", "group": "Identifiers", "desc": "Vendor name (from Inventory Hub)"},
     {"key": "SNAPSHOT_DATE",        "label": "As of",                  "default": False, "type": "str", "group": "Identifiers", "desc": "Date this inventory snapshot was taken"},
     # ── Categorization ──
     {"key": "REGION",               "label": "Region",                 "default": True,  "type": "str", "group": "Categorization", "desc": "GB (UK / Northampton) or EU (Wroclaw)"},
+    {"key": "WAREHOUSE_NAME",       "label": "Warehouse",              "default": True,  "type": "str", "group": "Categorization", "desc": "Central warehouse holding this region's stock — Northampton (GB) or Wroclaw (EU). From the current-warehouse table."},
     {"key": "INVENTORY_POOL",       "label": "Inventory Pool",         "default": True,  "type": "str", "group": "Categorization", "desc": "Specific marketplace/pool (e.g., Amazon DE, Pattern GB)"},
     {"key": "FULFILLMENT_NETWORK",  "label": "Network",                "default": True,  "type": "str", "group": "Categorization", "desc": "Pattern PFS or Amazon FBA"},
     {"key": "INVENTORY_TYPE",       "label": "Inventory Type",         "default": False, "type": "str", "group": "Categorization", "desc": "e.g., Pattern Owned"},
@@ -991,9 +1026,9 @@ INVENTORY_COLUMNS = [
     {"key": "WHOLESALE_PRICE_USD",  "label": "Wholesale (USD)",        "default": False, "type": "num", "group": "Categorization", "desc": "Wholesale cost in USD"},
     # ── Core Inventory (region-aware) ──
     {"key": "FULFILLABLE",          "label": "Fulfillable",            "default": True,  "type": "num", "group": "Core", "desc": "Units ready to ship at Amazon / Pattern / Marketplace"},
-    {"key": "STOW_PICKABLE_QTY",    "label": "Stow Pickable",          "default": True,  "type": "num", "group": "Core", "desc": "Units in our warehouse, sellable, in pickable areas (region-aware: NH for GB, WR for EU)"},
+    {"key": "STOW_PICKABLE_QTY",    "label": "CW Inventory",           "default": True,  "type": "num", "group": "Core", "desc": "Units in our central warehouse, sellable, in pickable areas (region-aware: NH for GB, WR for EU)"},
     {"key": "PFS_RESERVED",         "label": "PFS Reserved",           "default": True,  "type": "num", "group": "Core", "desc": "Units in our warehouse already reserved for PFS orders"},
-    {"key": "ACTUAL_AVAILABLE_QTY", "label": "Actual Available",       "default": True,  "type": "num", "group": "Core", "desc": "Stow Pickable − PFS Reserved (true free stock in our warehouse)"},
+    {"key": "ACTUAL_AVAILABLE_QTY", "label": "Pickable",               "default": True,  "type": "num", "group": "Core", "desc": "CW Inventory − PFS Reserved (true free stock in our central warehouse)"},
     {"key": "UNFULFILLABLE",        "label": "Unfulfillable",          "default": True,  "type": "num", "group": "Core", "desc": "Units that can't be sold (de-listed, returns, damaged…)"},
     # ── Movement & Pipeline ──
     {"key": "INBOUND",              "label": "Inbound",                "default": True,  "type": "num", "group": "Movement", "desc": "Units inbounding to a marketplace"},
@@ -1020,8 +1055,10 @@ INVENTORY_COLUMNS = [
     {"key": "PIPELINE_UNITS_PATTERN_OWNED_WOS",                      "label": "Pipeline WOS (Pattern Owned)",    "default": False, "type": "num", "group": "Planning", "desc": "Weeks of Supply on pipeline (Pattern owned, actual sales)"},
     {"key": "PIPELINE_UNITS_PATTERN_OWNED_WOS_DEFAULT_FCST",         "label": "Pipeline WOS (Pattern Owned, Default Fcst)", "default": False, "type": "num", "group": "Planning", "desc": "Weeks of Supply on pipeline (Pattern owned, default forecast)"},
     # ── Per-warehouse Breakouts (hidden by default) ──
-    {"key": "NORTHAMPTON_STOW_PICKABLE_QTY", "label": "NH Stow Pickable",       "default": False, "type": "num", "group": "Warehouse Detail", "desc": "Northampton Stow Pickable units"},
-    {"key": "WROCLAW_STOW_PICKABLE_QTY",     "label": "WR Stow Pickable",       "default": False, "type": "num", "group": "Warehouse Detail", "desc": "Wroclaw Stow Pickable units"},
+    {"key": "STORAGE_IDS",          "label": "Storage ID(s)",          "default": True,  "type": "str", "group": "Warehouse Detail", "desc": "Storage / bin locations holding this master in the warehouse (comma-separated, from the current-warehouse table). Covers all statuses, not just sellable."},
+    {"key": "WAREHOUSE_STATUS",     "label": "Warehouse Status",       "default": True,  "type": "str", "group": "Warehouse Detail", "desc": "Stock statuses present for this master in the warehouse (e.g. Sellable, Reserved, Unfulfillable). From the current-warehouse table."},
+    {"key": "NORTHAMPTON_STOW_PICKABLE_QTY", "label": "NH CW Inventory",        "default": False, "type": "num", "group": "Warehouse Detail", "desc": "Northampton CW Inventory units"},
+    {"key": "WROCLAW_STOW_PICKABLE_QTY",     "label": "WR CW Inventory",        "default": False, "type": "num", "group": "Warehouse Detail", "desc": "Wroclaw CW Inventory units"},
     {"key": "GB_PFS_PATTERN_WH_RESERVED",    "label": "GB PFS Reserved",        "default": False, "type": "num", "group": "Warehouse Detail", "desc": "GB Pattern PFS warehouse reserved units"},
     {"key": "EU_PFS_PATTERN_WH_RESERVED",    "label": "EU PFS Reserved",        "default": False, "type": "num", "group": "Warehouse Detail", "desc": "EU Pattern PFS warehouse reserved units"},
     # ── USD Values (all hidden by default) ──
@@ -2097,10 +2134,11 @@ with inventory_tab:
 
     if st.session_state["inv_mode"] == "ids":
         # ── ID-BASED INPUT ──
-        st.markdown("**Paste identifiers** — Master IDs and/or Listing IDs (auto-resolved)")
+        st.markdown("**Paste identifiers** — Master IDs, Listing IDs, ASINs, SKUs or FNSKUs "
+                    "(anything that isn't already a Master ID is auto-resolved to one)")
         inv_text = st.text_area(
             "IDs",
-            placeholder="One per line, or comma/space separated\ne.g.\nP0M3SJXI\nL0NC2POW\nP0NEIWB5",
+            placeholder="One per line, or comma/space separated\ne.g.\nP0M3SJXI   (Master ID)\nL0NC2POW   (Listing ID)\nB07PGL4G2R (ASIN)",
             height=140, key="inv_text", label_visibility="collapsed",
         )
 
@@ -2125,25 +2163,25 @@ with inventory_tab:
                 progress_bar = st.progress(0, text="🔌 Connecting to Snowflake...")
 
                 try:
-                    # Step 1: Separate Master IDs from Listing IDs
-                    # Master IDs typically start with P0, Listing IDs with L0 (Pattern convention)
+                    # Step 1: Master IDs (start with P0) are used as-is; everything else
+                    # (Listing IDs, ASINs, SKUs, FNSKUs) is resolved to a Master ID.
                     likely_master = [r for r in raw_ids if r.upper().startswith("P0")]
                     likely_listing = [r for r in raw_ids if r.upper().startswith("L0")]
                     other = [r for r in raw_ids if not r.upper().startswith("P0") and not r.upper().startswith("L0")]
 
-                    # Treat "other" as potentially either — try resolving them
+                    # Everything that isn't a Master ID gets resolved (ASINs land here too)
                     listing_candidates = likely_listing + other
 
                     resolved_masters = list(likely_master)
                     resolution_map = {}
 
                     if listing_candidates:
-                        progress_bar.progress(15, text=f"🔗 Resolving {len(listing_candidates)} Listing ID(s) → Master IDs...")
+                        progress_bar.progress(15, text=f"🔗 Resolving {len(listing_candidates)} identifier(s) (Listing IDs / ASINs / SKUs) → Master IDs...")
                         try:
                             resolution_map = resolve_listing_to_master(listing_candidates)
                             resolved_masters.extend(resolution_map.values())
                         except Exception as e:
-                            st.warning(f"Listing ID resolution had an issue: {e}. Continuing with Master IDs only.")
+                            st.warning(f"ID resolution had an issue: {e}. Continuing with Master IDs only.")
 
                     # Dedupe
                     resolved_masters = list({m for m in resolved_masters if m})
@@ -2157,7 +2195,7 @@ with inventory_tab:
                         progress_bar.progress(55, text=f"🔄 Joining with Inventory Hub for {len(resolved_masters)} Master ID(s)...")
                         inv_df = run_inventory_lookup(resolved_masters,
                                                       regions=uf_regions, networks=uf_networks, inv_types=uf_inv_types)
-                        progress_bar.progress(85, text="🧮 Calculating Actual Available (Stow Pickable − PFS Reserved)...")
+                        progress_bar.progress(85, text="🧮 Calculating Pickable (CW Inventory − PFS Reserved)...")
                         time.sleep(0.1)
                         progress_bar.progress(100, text=f"✅ Done — {len(inv_df)} row(s) found!")
                         time.sleep(0.3)
@@ -2172,12 +2210,12 @@ with inventory_tab:
                             st.session_state["inv_resolution_map"] = resolution_map
                             st.success(f"✅ Found **{len(inv_df)}** inventory row(s) across **{inv_df['MASTER_ID'].nunique()}** Master ID(s).")
                             if resolution_map:
-                                st.info(f"🔗 Resolved {len(resolution_map)} Listing ID(s) to Master IDs.")
+                                st.info(f"🔗 Resolved {len(resolution_map)} identifier(s) (Listing IDs / ASINs / SKUs / FNSKUs) → Master IDs.")
                 except Exception as e:
                     progress_bar.empty()
                     st.error(f"Inventory lookup failed: {e}")
         else:
-            st.info("👆 Paste at least one Master ID or Listing ID to begin.")
+            st.info("👆 Paste at least one Master ID, Listing ID or ASIN to begin.")
 
     else:
         # ── BRAND-BASED INPUT ──
@@ -2213,7 +2251,7 @@ with inventory_tab:
                         progress_bar.progress(55, text=f"🔄 Joining with Inventory Hub data...")
                         inv_df = run_inventory_lookup(brand_masters,
                                                        regions=uf_regions, networks=uf_networks, inv_types=uf_inv_types)
-                        progress_bar.progress(85, text="🧮 Calculating Actual Available (Stow Pickable − PFS Reserved)...")
+                        progress_bar.progress(85, text="🧮 Calculating Pickable (CW Inventory − PFS Reserved)...")
                         time.sleep(0.1)
                         progress_bar.progress(100, text=f"✅ Done — {len(inv_df)} row(s) found!")
                         time.sleep(0.3)
@@ -2310,7 +2348,7 @@ with inventory_tab:
         with r1c3:
             st.markdown(render_card_dual("Unfulfillable", sum_unfulfillable_pfs, sum_unfulfillable_fba), unsafe_allow_html=True)
         with r1c4:
-            st.markdown(render_card_dual("Actual Available", sum_actual_pfs, "—"), unsafe_allow_html=True)
+            st.markdown(render_card_dual("Pickable", sum_actual_pfs, "—"), unsafe_allow_html=True)
 
         # Row 2: Pattern WH Reserved · Fulfillment Channel Units · Inbound · On Order
         r2c1, r2c2, r2c3, r2c4 = st.columns(4)
@@ -2388,112 +2426,49 @@ with inventory_tab:
             mask = inv_filtered.astype(str).apply(lambda r: term in " ".join(r.values).lower(), axis=1)
             inv_filtered = inv_filtered[mask]
 
-        # ── COLUMN VISIBILITY (Presets + Group toggles + Fine control) ──
-        with st.expander("⚙️ Customize Columns", expanded=False):
-            # Initialize visible columns state
-            if "inv_visible_cols" not in st.session_state:
-                st.session_state["inv_visible_cols"] = [c["key"] for c in INVENTORY_COLUMNS if c["default"]]
-
-            # ─ Presets (top row) ─
-            st.markdown("**Quick Views**")
-            preset_row1 = st.columns(5)
-            presets = {
-                "Compact":          [c["key"] for c in INVENTORY_COLUMNS if c["group"] in ("Identifiers", "Categorization", "Core") and c["key"] in {"MASTER_ID", "PART_NUMBER", "REGION", "FULFILLMENT_NETWORK", "DNO_STATUS", "FULFILLABLE", "STOW_PICKABLE_QTY", "ACTUAL_AVAILABLE_QTY"}],
-                "Standard":         [c["key"] for c in INVENTORY_COLUMNS if c["default"]],
-                "Planning Focus":   [c["key"] for c in INVENTORY_COLUMNS if c["group"] in ("Identifiers", "Categorization", "Core", "Planning")],
-                "Financial":        [c["key"] for c in INVENTORY_COLUMNS if c["group"] in ("Identifiers", "Categorization", "Core", "USD")],
-                "Detailed (All)":   [c["key"] for c in INVENTORY_COLUMNS],
+        # ── COLUMN VISIBILITY (clean: one preset picker + optional fine-tune) ──
+        with st.expander("⚙️ Columns", expanded=False):
+            COL_PRESETS = {
+                "Compact":   ["MASTER_ID", "PART_NUMBER", "ASIN", "REGION", "INVENTORY_POOL",
+                              "FULFILLMENT_NETWORK", "DNO_STATUS", "FULFILLABLE",
+                              "STOW_PICKABLE_QTY", "ACTUAL_AVAILABLE_QTY"],
+                "Standard":  [c["key"] for c in INVENTORY_COLUMNS if c["default"]],
+                "Planning":  [c["key"] for c in INVENTORY_COLUMNS if c["group"] in ("Identifiers", "Categorization", "Core", "Planning")],
+                "Financial": [c["key"] for c in INVENTORY_COLUMNS if c["group"] in ("Identifiers", "Categorization", "Core", "USD")],
+                "All":       [c["key"] for c in INVENTORY_COLUMNS],
             }
-            for i, (preset_name, preset_cols) in enumerate(presets.items()):
-                with preset_row1[i]:
-                    if st.button(preset_name, key=f"inv_preset_{i}", use_container_width=True):
-                        st.session_state["inv_visible_cols"] = preset_cols
-                        st.rerun()
 
-            st.markdown("")
-            st.markdown("**Toggle Groups On/Off**")
-            st.caption("Quickly include/exclude an entire category of columns.")
+            chosen_preset = st.radio(
+                "Quick view",
+                list(COL_PRESETS.keys()) + ["Custom"],
+                index=1,  # default to Standard
+                horizontal=True,
+                key="inv_preset",
+            )
 
-            # ─ Group toggles ─
-            groups = []
-            seen = set()
-            for c in INVENTORY_COLUMNS:
-                if c["group"] not in seen:
-                    groups.append(c["group"])
-                    seen.add(c["group"])
-
-            group_cols_visible = {g: any(c["key"] in st.session_state["inv_visible_cols"] for c in INVENTORY_COLUMNS if c["group"] == g) for g in groups}
-            group_btn_cols = st.columns(len(groups))
-            for i, g in enumerate(groups):
-                group_count_total = sum(1 for c in INVENTORY_COLUMNS if c["group"] == g)
-                group_count_on = sum(1 for c in INVENTORY_COLUMNS if c["group"] == g and c["key"] in st.session_state["inv_visible_cols"])
-                btn_label = f"{g}\n{group_count_on}/{group_count_total}"
-                with group_btn_cols[i]:
-                    if st.button(btn_label, key=f"inv_grp_{g}", use_container_width=True,
-                                 type="primary" if group_cols_visible[g] else "secondary"):
-                        # Toggle: if any in group are on, turn all off. Else, turn all on.
-                        current = set(st.session_state["inv_visible_cols"])
-                        group_keys = [c["key"] for c in INVENTORY_COLUMNS if c["group"] == g]
-                        if group_cols_visible[g]:
-                            current -= set(group_keys)
-                        else:
-                            current |= set(group_keys)
-                        st.session_state["inv_visible_cols"] = [c["key"] for c in INVENTORY_COLUMNS if c["key"] in current]
-                        st.rerun()
-
-            st.markdown("")
-            st.markdown("**Fine Control — Individual Columns**")
-            st.caption("Pick exactly which columns to show. Grouped for readability.")
-
-            # ─ Per-group multi-select ─
-            for g in groups:
-                group_cols = [c for c in INVENTORY_COLUMNS if c["group"] == g]
-                label_map = {c["label"]: c["key"] for c in group_cols}
-                key_to_label = {c["key"]: c["label"] for c in group_cols}
-                current_in_group = [key_to_label[k] for k in st.session_state["inv_visible_cols"] if k in key_to_label]
-
-                selected = st.multiselect(
-                    f"{g} ({len(current_in_group)}/{len(group_cols)})",
-                    options=[c["label"] for c in group_cols],
-                    default=current_in_group,
-                    key=f"inv_ms_{g}",
-                    placeholder=f"No {g} columns visible",
+            if chosen_preset == "Custom":
+                # One searchable multiselect, grouped labels — only shown when fine-tuning
+                label_to_key = {f"{c['group']} · {c['label']}": c["key"] for c in INVENTORY_COLUMNS}
+                key_to_label = {c["key"]: f"{c['group']} · {c['label']}" for c in INVENTORY_COLUMNS}
+                default_labels = [key_to_label[k] for k in COL_PRESETS["Standard"]]
+                chosen_labels = st.multiselect(
+                    "Pick exactly the columns you want",
+                    options=list(label_to_key.keys()),
+                    default=default_labels,
+                    key="inv_custom_cols",
+                    placeholder="Search columns…",
                 )
-                # Reconcile: keep order of existing keys, add new keys at the end (preserves user reordering)
-                existing_order = list(st.session_state["inv_visible_cols"])
-                # Remove all this group's keys
-                existing_order = [k for k in existing_order if k not in {c["key"] for c in group_cols}]
-                # Add selected keys back (in the order they appear in INVENTORY_COLUMNS for new additions)
-                selected_keys_in_group = [label_map[lbl] for lbl in selected]
-                # Preserve any selected key that was already there (in its existing position)
-                # by walking through previous state
-                prev_state = st.session_state.get("_inv_prev_visible", st.session_state["inv_visible_cols"])
-                ordered_selected = []
-                # First add ones in their previous position
-                for k in prev_state:
-                    if k in selected_keys_in_group and k not in ordered_selected:
-                        ordered_selected.append(k)
-                # Then add any newly-added ones at the end
-                for k in selected_keys_in_group:
-                    if k not in ordered_selected:
-                        ordered_selected.append(k)
-                # Merge back: existing_order (other groups) + ordered_selected for this group
-                # But we want to insert this group's selections in roughly their right spot.
-                # Simpler: rebuild from scratch using INVENTORY_COLUMNS order as default, but honor previous state
-                all_selected = set(existing_order) | set(ordered_selected)
-                # Use previous session state order if it has these keys, else fall back to INVENTORY_COLUMNS order
-                rebuilt = []
-                for k in st.session_state["inv_visible_cols"]:
-                    if k in all_selected and k not in rebuilt:
-                        rebuilt.append(k)
-                # Append anything new
-                for c in INVENTORY_COLUMNS:
-                    if c["key"] in all_selected and c["key"] not in rebuilt:
-                        rebuilt.append(c["key"])
-                st.session_state["inv_visible_cols"] = rebuilt
+                visible = [label_to_key[lbl] for lbl in chosen_labels]
+            else:
+                visible = COL_PRESETS[chosen_preset]
 
-            # ─ Tip: drag column headers in the table to reorder ─
-            st.caption("💡 **Tip**: in the table below, **drag column headers** left or right to reorder columns interactively.")
+            # Store in INVENTORY_COLUMNS order so table column order stays consistent
+            visible_set = set(visible)
+            st.session_state["inv_visible_cols"] = [c["key"] for c in INVENTORY_COLUMNS if c["key"] in visible_set]
+            st.caption(
+                f"Showing **{len(st.session_state['inv_visible_cols'])}** columns. "
+                "Pick **Custom** to fine-tune, and drag column headers in the table to reorder."
+            )
 
         # ── DISPLAY: TABLE VIEW or CARD VIEW ──
         visible_keys = [k for k in st.session_state["inv_visible_cols"] if k in inv_filtered.columns]
@@ -2530,17 +2505,21 @@ with inventory_tab:
                 if "DNO" in row.index:
                     if str(row.get("DNO", "")).strip().upper() == "TRUE":
                         styles = ["background-color: rgba(239,68,68,0.12)"] * len(row)
-                # Color the calculated columns (Actual Available)
+                # Highlight the two key calculated columns in green: CW Inventory & Pickable
+                GREEN_COLS = {"CW Inventory", "Pickable"}
                 for i, col in enumerate(row.index):
-                    if col == "Actual Available":
+                    if col in GREEN_COLS:
                         try:
-                            v = float(row[col]) if pd.notna(row[col]) else 0
-                            if v < 0:
-                                styles[i] = "background-color: rgba(245,158,11,0.25); color: #f59e0b; font-weight: 600;"
-                            elif v > 0:
-                                styles[i] = "background-color: rgba(34,197,94,0.10); color: #22c55e; font-weight: 600;"
+                            v = float(row[col]) if pd.notna(row[col]) else None
                         except (ValueError, TypeError):
-                            pass
+                            v = None
+                        if v is None:
+                            continue
+                        if col == "Pickable" and v < 0:
+                            # negative free stock is a red flag — keep an amber warning
+                            styles[i] = "background-color: rgba(245,158,11,0.25); color: #f59e0b; font-weight: 600;"
+                        else:
+                            styles[i] = "background-color: rgba(34,197,94,0.18); color: #22c55e; font-weight: 600;"
                 return styles
 
             if len(display_df) > 5000:
