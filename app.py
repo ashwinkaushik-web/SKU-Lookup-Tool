@@ -1101,7 +1101,7 @@ with st.sidebar:
     st.markdown('<div class="sidebar-section"><h4>📖 How to Use</h4><p>'
                 '1. Paste identifiers one per line, or upload a CSV/Excel file<br>'
                 '2. Click Lookup to query Snowflake<br>'
-                '3. Switch to the Results tab to view data<br>'
+                '3. Results appear right below your search<br>'
                 '4. Use filters to narrow down results<br>'
                 '5. Toggle columns to customise your view<br>'
                 '6. Export to CSV when done</p></div>', unsafe_allow_html=True)
@@ -1195,149 +1195,442 @@ REGION_OPTIONS = ["All", "UK", "EU", "Middle East", "US", "Australia", "Canada",
 # ══════════════════════════════════════════════
 # Input + Results in tabs
 # ══════════════════════════════════════════════
-input_tab, brand_tab, fr_tab, inventory_tab, results_tab = st.tabs(["🔍 Search by ID", "🏷️ Browse by Brand", "🔬 FR Check", "📦 Inventory", "📊 Results"])
+search_tab, fr_tab, inventory_tab = st.tabs(["🔍 Catalogue Lookup", "🔬 FR Check", "📦 Inventory"])
 
-with input_tab:
+with search_tab:
     st.markdown("")
-    paste_col, upload_col = st.columns(2)
-    skus_to_lookup = []
 
-    with paste_col:
-        st.markdown("#### ✏️ Paste Items")
-        sku_text = st.text_area(
-            "Enter identifiers", placeholder="One item per line, e.g.\nUK-BOSCH-786700-COM\nL0NC2POW\nB0BXT6YCHK",
-            height=220, label_visibility="collapsed",
-        )
-        if sku_text.strip():
-            skus_to_lookup = [s.strip() for s in sku_text.strip().split("\n") if s.strip()]
-        st.caption(f"{len(skus_to_lookup)} item(s) entered • Max 500")
+    # ── Mode toggle: Search by ID  ·  Browse by Brand ──
+    if "search_mode" not in st.session_state:
+        st.session_state["search_mode"] = "ids"
 
-    with upload_col:
-        st.markdown("#### 📁 Upload File")
-        uploaded_file = st.file_uploader("CSV or Excel", type=["csv", "xlsx", "xls"], label_visibility="collapsed")
-        if uploaded_file:
-            try:
-                if uploaded_file.name.lower().endswith(".csv"):
-                    upload_df = pd.read_csv(uploaded_file, dtype=str)
-                else:
-                    upload_df = pd.read_excel(uploaded_file, dtype=str, engine="openpyxl")
-                skus_to_lookup = upload_df.iloc[:, 0].dropna().astype(str).str.strip().tolist()
-                skus_to_lookup = [s for s in skus_to_lookup if s]
-                st.success(f"📎 Loaded **{len(skus_to_lookup)}** items from `{uploaded_file.name}`")
-            except Exception as e:
-                st.error(f"Failed to read file: {e}")
+    sm1, sm2, _ = st.columns([1, 1, 4])
+    with sm1:
+        if st.button("🔍 Search by ID",
+                     type="primary" if st.session_state["search_mode"] == "ids" else "secondary",
+                     use_container_width=True, key="search_mode_ids"):
+            st.session_state["search_mode"] = "ids"
+            st.rerun()
+    with sm2:
+        if st.button("🏷️ Browse by Brand",
+                     type="primary" if st.session_state["search_mode"] == "brand" else "secondary",
+                     use_container_width=True, key="search_mode_brand"):
+            st.session_state["search_mode"] = "brand"
+            st.rerun()
 
-    if skus_to_lookup:
-        if len(skus_to_lookup) > 500:
-            st.warning("⚠️ Max 500 items. Only first 500 processed.")
-            skus_to_lookup = skus_to_lookup[:500]
-
-        if st.button("🔍 Lookup", type="primary", use_container_width=True):
-            # Progress bar animation
-            progress_bar = st.progress(0, text="Connecting to Snowflake...")
-            time.sleep(0.3)
-            progress_bar.progress(15, text="Connected. Building query...")
-            time.sleep(0.2)
-            progress_bar.progress(30, text=f"Querying {len(skus_to_lookup)} item(s)...")
-
-            try:
-                df = run_lookup(skus_to_lookup)
-                progress_bar.progress(80, text="Processing results...")
-                time.sleep(0.2)
-
-                if df.empty:
-                    progress_bar.progress(100, text="Done — no results found.")
-                    st.warning("No results found for the provided items.")
-                    st.session_state["results_df"] = pd.DataFrame()
-                else:
-                    progress_bar.progress(100, text=f"Done — {len(df)} results found!")
-                    st.session_state["results_df"] = df
-                    st.session_state["skus_count"] = len(skus_to_lookup)
-                    st.session_state["skus_list"] = skus_to_lookup
-                    st.session_state["lookup_count"] += 1
-                    st.session_state["total_items_looked_up"] += len(skus_to_lookup)
-                    st.success(f"✅ Found **{len(df)}** results! Switch to the **📊 Results** tab.")
-
-                time.sleep(0.5)
-                progress_bar.empty()
-            except Exception as e:
-                progress_bar.empty()
-                st.error(f"Query failed: {e}")
-
-
-with brand_tab:
     st.markdown("")
-    st.markdown("#### 🏷️ Browse All Listings for a Brand")
-    st.caption("Select a brand and region to fetch all their listings. Use filters in the Results tab to narrow down further.")
 
-    bb1, bb2, bb3 = st.columns(3)
+    if st.session_state["search_mode"] == "ids":
+        # ══════════════ SEARCH BY ID ══════════════
+        paste_col, upload_col = st.columns(2)
+        skus_to_lookup = []
 
-    with bb1:
-        # Fetch vendor list (cached)
-        try:
-            vendor_list = get_vendor_list()
-        except Exception:
-            vendor_list = []
-        sel_brand = st.selectbox("Select Brand / Vendor", options=[""] + vendor_list,
-                                  key="brand_select", placeholder="Start typing to search...")
+        with paste_col:
+            st.markdown("#### ✏️ Paste Items")
+            sku_text = st.text_area(
+                "Enter identifiers", placeholder="One item per line, e.g.\nUK-BOSCH-786700-COM\nL0NC2POW\nB0BXT6YCHK",
+                height=220, label_visibility="collapsed",
+            )
+            if sku_text.strip():
+                skus_to_lookup = [s.strip() for s in sku_text.strip().split("\n") if s.strip()]
+            st.caption(f"{len(skus_to_lookup)} item(s) entered • Max 500")
 
-    with bb2:
-        brand_region = st.selectbox("Region", REGION_OPTIONS, key="brand_region")
+        with upload_col:
+            st.markdown("#### 📁 Upload File")
+            uploaded_file = st.file_uploader("CSV or Excel", type=["csv", "xlsx", "xls"], label_visibility="collapsed")
+            if uploaded_file:
+                try:
+                    if uploaded_file.name.lower().endswith(".csv"):
+                        upload_df = pd.read_csv(uploaded_file, dtype=str)
+                    else:
+                        upload_df = pd.read_excel(uploaded_file, dtype=str, engine="openpyxl")
+                    skus_to_lookup = upload_df.iloc[:, 0].dropna().astype(str).str.strip().tolist()
+                    skus_to_lookup = [s for s in skus_to_lookup if s]
+                    st.success(f"📎 Loaded **{len(skus_to_lookup)}** items from `{uploaded_file.name}`")
+                except Exception as e:
+                    st.error(f"Failed to read file: {e}")
 
-    with bb3:
-        result_limit = st.selectbox("Max Results", ["500", "1000", "2000", "5000", "No limit"],
-                                     key="brand_limit")
+        if skus_to_lookup:
+            if len(skus_to_lookup) > 500:
+                st.warning("⚠️ Max 500 items. Only first 500 processed.")
+                skus_to_lookup = skus_to_lookup[:500]
 
-    if sel_brand:
-        # Determine region marketplaces
-        region_mps = None
-        exclude_mapped = False
-        if brand_region == "Other":
-            exclude_mapped = True            # fetch all, then keep only un-mapped marketplaces
-        elif brand_region != "All":
-            region_mps = REGION_MAP.get(brand_region, [])
-
-        # Determine limit
-        limit_val = None if result_limit == "No limit" else int(result_limit)
-
-        if st.button("🏷️ Fetch All Listings", type="primary", use_container_width=True, key="brand_fetch"):
-            progress_bar = st.progress(0, text="Connecting to Snowflake...")
-            time.sleep(0.3)
-            progress_bar.progress(20, text=f"Fetching listings for {sel_brand}...")
-            time.sleep(0.2)
-            progress_bar.progress(40, text="Querying across all marketplaces...")
-
-            try:
-                df = run_brand_lookup(sel_brand, region_mps, limit_val)
-                if exclude_mapped and not df.empty:
-                    mapped = set().union(*REGION_MAP.values())
-                    df = df[~df["MARKETPLACE"].isin(mapped)]
-                progress_bar.progress(80, text="Processing results...")
+            if st.button("🔍 Lookup", type="primary", use_container_width=True):
+                progress_bar = st.progress(0, text="Connecting to Snowflake...")
+                time.sleep(0.3)
+                progress_bar.progress(15, text="Connected. Building query...")
                 time.sleep(0.2)
+                progress_bar.progress(30, text=f"Querying {len(skus_to_lookup)} item(s)...")
 
-                if df.empty:
-                    progress_bar.progress(100, text="Done — no listings found.")
-                    st.warning(f"No listings found for **{sel_brand}**" +
-                              (f" in **{brand_region}** region." if brand_region != "All" else "."))
-                    st.session_state["results_df"] = pd.DataFrame()
-                else:
-                    progress_bar.progress(100, text=f"Done — {len(df)} listings found!")
-                    st.session_state["results_df"] = df
-                    st.session_state["skus_count"] = len(df)
-                    st.session_state["skus_list"] = []
-                    st.session_state["lookup_count"] += 1
-                    st.session_state["total_items_looked_up"] += len(df)
-                    region_label = f" in **{brand_region}**" if brand_region != "All" else ""
-                    st.success(f"✅ Found **{len(df)}** listings for **{sel_brand}**{region_label}! Switch to the **📊 Results** tab.")
+                try:
+                    df = run_lookup(skus_to_lookup)
+                    progress_bar.progress(80, text="Processing results...")
+                    time.sleep(0.2)
 
-                time.sleep(0.5)
-                progress_bar.empty()
-            except Exception as e:
-                progress_bar.empty()
-                st.error(f"Query failed: {e}")
+                    if df.empty:
+                        progress_bar.progress(100, text="Done — no results found.")
+                        st.warning("No results found for the provided items.")
+                        st.session_state["results_df"] = pd.DataFrame()
+                    else:
+                        progress_bar.progress(100, text=f"Done — {len(df)} results found!")
+                        st.session_state["results_df"] = df
+                        st.session_state["skus_count"] = len(skus_to_lookup)
+                        st.session_state["skus_list"] = skus_to_lookup
+                        st.session_state["lookup_count"] += 1
+                        st.session_state["total_items_looked_up"] += len(skus_to_lookup)
+                        st.success(f"✅ Found **{len(df)}** results — see them below. 👇")
+
+                    time.sleep(0.5)
+                    progress_bar.empty()
+                except Exception as e:
+                    progress_bar.empty()
+                    st.error(f"Query failed: {e}")
+
     else:
-        st.info("👆 Select a brand to get started.")
+        # ══════════════ BROWSE BY BRAND ══════════════
+        st.markdown("#### 🏷️ Browse All Listings for a Brand")
+        st.caption("Select a brand and region to fetch all their listings. Use the filters below to narrow down further.")
 
+        bb1, bb2, bb3 = st.columns(3)
+
+        with bb1:
+            # Fetch vendor list (cached)
+            try:
+                vendor_list = get_vendor_list()
+            except Exception:
+                vendor_list = []
+            sel_brand = st.selectbox("Select Brand / Vendor", options=[""] + vendor_list,
+                                      key="brand_select", placeholder="Start typing to search...")
+
+        with bb2:
+            brand_region = st.selectbox("Region", REGION_OPTIONS, key="brand_region")
+
+        with bb3:
+            result_limit = st.selectbox("Max Results", ["500", "1000", "2000", "5000", "No limit"],
+                                         key="brand_limit")
+
+        if sel_brand:
+            # Determine region marketplaces
+            region_mps = None
+            exclude_mapped = False
+            if brand_region == "Other":
+                exclude_mapped = True            # fetch all, then keep only un-mapped marketplaces
+            elif brand_region != "All":
+                region_mps = REGION_MAP.get(brand_region, [])
+
+            # Determine limit
+            limit_val = None if result_limit == "No limit" else int(result_limit)
+
+            if st.button("🏷️ Fetch All Listings", type="primary", use_container_width=True, key="brand_fetch"):
+                progress_bar = st.progress(0, text="Connecting to Snowflake...")
+                time.sleep(0.3)
+                progress_bar.progress(20, text=f"Fetching listings for {sel_brand}...")
+                time.sleep(0.2)
+                progress_bar.progress(40, text="Querying across all marketplaces...")
+
+                try:
+                    df = run_brand_lookup(sel_brand, region_mps, limit_val)
+                    if exclude_mapped and not df.empty:
+                        mapped = set().union(*REGION_MAP.values())
+                        df = df[~df["MARKETPLACE"].isin(mapped)]
+                    progress_bar.progress(80, text="Processing results...")
+                    time.sleep(0.2)
+
+                    if df.empty:
+                        progress_bar.progress(100, text="Done — no listings found.")
+                        st.warning(f"No listings found for **{sel_brand}**" +
+                                  (f" in **{brand_region}** region." if brand_region != "All" else "."))
+                        st.session_state["results_df"] = pd.DataFrame()
+                    else:
+                        progress_bar.progress(100, text=f"Done — {len(df)} listings found!")
+                        st.session_state["results_df"] = df
+                        st.session_state["skus_count"] = len(df)
+                        st.session_state["skus_list"] = []
+                        st.session_state["lookup_count"] += 1
+                        st.session_state["total_items_looked_up"] += len(df)
+                        region_label = f" in **{brand_region}**" if brand_region != "All" else ""
+                        st.success(f"✅ Found **{len(df)}** listings for **{sel_brand}**{region_label} — see them below. 👇")
+
+                    time.sleep(0.5)
+                    progress_bar.empty()
+                except Exception as e:
+                    progress_bar.empty()
+                    st.error(f"Query failed: {e}")
+        else:
+            st.info("👆 Select a brand to get started.")
+
+    # ══════════════════════════════════════════════
+    # RESULTS (inline — render directly below the search controls)
+    # ══════════════════════════════════════════════
+    st.markdown("---")
+
+    if "results_df" not in st.session_state or st.session_state.get("results_df", pd.DataFrame()).empty:
+        st.info("👆 Run a search above (by ID or by brand) and your results will appear here.")
+    else:
+        df = st.session_state["results_df"].copy()
+        skus_count = st.session_state.get("skus_count", 0)
+        skus_list = st.session_state.get("skus_list", [])
+
+        # ── Missing items ──
+        missing = find_missing_items(skus_list, df)
+        if missing:
+            with st.expander(f"⚠️ {len(missing)} item(s) returned no results — click to see", expanded=False):
+                missing_html = "".join(f'<span class="missing-item">{m}</span>' for m in missing)
+                st.markdown(missing_html, unsafe_allow_html=True)
+
+        # ── Colored summary cards ──
+        dno_count = int((df["IS_DNO"] == True).sum()) if "IS_DNO" in df.columns else 0
+        shippable_count = int((df["SHIPPABLE_TAG"] == True).sum()) if "SHIPPABLE_TAG" in df.columns else 0
+        fba_count = int((df["LISTING_FULFILLMENT_TYPE"].str.upper() == "FBA").sum()) if "LISTING_FULFILLMENT_TYPE" in df.columns else 0
+        active_count = int((df["IS_ACTIVE"] == True).sum()) if "IS_ACTIVE" in df.columns else 0
+
+        mc1, mc2, mc3, mc4, mc5, mc6 = st.columns(6)
+        with mc1: st.markdown(f'<div class="metric-card mc-total"><div class="label">Total</div><div class="value">{len(df)}</div></div>', unsafe_allow_html=True)
+        with mc2: st.markdown(f'<div class="metric-card mc-dno"><div class="label">DNO = True</div><div class="value">{dno_count}</div></div>', unsafe_allow_html=True)
+        with mc3: st.markdown(f'<div class="metric-card mc-ship"><div class="label">Shippable</div><div class="value">{shippable_count}</div></div>', unsafe_allow_html=True)
+        with mc4: st.markdown(f'<div class="metric-card mc-noship"><div class="label">Not Shippable</div><div class="value">{len(df) - shippable_count}</div></div>', unsafe_allow_html=True)
+        with mc5: st.markdown(f'<div class="metric-card mc-fba"><div class="label">FBA</div><div class="value">{fba_count}</div></div>', unsafe_allow_html=True)
+        with mc6: st.markdown(f'<div class="metric-card mc-active"><div class="label">Active</div><div class="value">{active_count}</div></div>', unsafe_allow_html=True)
+
+        st.markdown("")
+
+        # ── Filters ──
+        st.markdown("### 🔽 Filters")
+        search_text = st.text_input("🔍 Search across all fields", placeholder="Type to search...", key="search_all")
+
+        # Region filter row
+        reg_col, mp_col, vn_col, dno_col = st.columns(4)
+        filtered = df.copy()
+
+        with reg_col:
+            sel_region = st.selectbox("🌍 Region", REGION_OPTIONS, key="f_region")
+            if sel_region == "Other":
+                # "Other" = any marketplace not assigned to a named region
+                mapped = set().union(*REGION_MAP.values())
+                filtered = filtered[~filtered["MARKETPLACE"].isin(mapped)]
+            elif sel_region != "All":
+                region_mps = REGION_MAP.get(sel_region, [])
+                filtered = filtered[filtered["MARKETPLACE"].isin(region_mps)]
+
+        with mp_col:
+            # Marketplace filter shows only marketplaces available after region filter
+            mp_vals = sorted(filtered["MARKETPLACE"].dropna().unique().tolist())
+            sel_mps = st.multiselect("Marketplace", options=mp_vals, default=[], key="f_mp", placeholder="All")
+            if sel_mps:
+                filtered = filtered[filtered["MARKETPLACE"].isin(sel_mps)]
+
+        with vn_col: filtered = multiselect_filter(filtered, "VENDOR", "Vendor", "f_vn")
+        with dno_col: filtered = bool_multiselect_filter(filtered, "IS_DNO", "DNO", "f_dno")
+
+        r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+        with r1c1: filtered = bool_multiselect_filter(filtered, "SHIPPABLE_TAG", "Shippable", "f_ship")
+        with r1c2: filtered = multiselect_filter(filtered, "LISTING_FULFILLMENT_TYPE", "Fulfillment Type", "f_ff")
+        with r1c3: filtered = multiselect_filter(filtered, "LISTING_TYPE", "Listing Type", "f_lt")
+        with r1c4: filtered = multiselect_filter(filtered, "COMMINGLED_STATUS", "Commingled", "f_cm")
+
+        r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+        with r2c1:
+            if "IS_ACTIVE" in filtered.columns:
+                filtered = bool_multiselect_filter(filtered, "IS_ACTIVE", "Active", "f_active")
+        with r2c2:
+            if "IS_DISCONTINUED" in filtered.columns:
+                filtered = bool_multiselect_filter(filtered, "IS_DISCONTINUED", "Discontinued", "f_disc")
+        with r2c3:
+            if "CAN_EXPIRE" in filtered.columns:
+                filtered = bool_multiselect_filter(filtered, "CAN_EXPIRE", "Can Expire", "f_expire")
+        with r2c4:
+            if "DNO_REASON_CODE" in filtered.columns:
+                filtered = multiselect_filter(filtered, "DNO_REASON_CODE", "DNO Reason Code", "f_dno_rc")
+
+        if search_text.strip():
+            mask = filtered.astype(str).apply(
+                lambda row: row.str.contains(search_text.strip(), case=False).any(), axis=1
+            )
+            filtered = filtered[mask]
+
+        st.caption(f"Showing **{len(filtered)}** of **{len(df)}** results")
+
+        # ── Quick copy column buttons ──
+        with st.expander("📋 Quick Copy — grab a full column of values"):
+            copy_cols = {"SKU": "SKU", "LISTING_ID": "Listing ID", "ASIN": "ASIN", "MPN": "MPN", "MASTER_ID": "Master ID", "FNSKU": "FNSKU"}
+            cc_cols = st.columns(len(copy_cols))
+            for i, (col_key, col_label) in enumerate(copy_cols.items()):
+                with cc_cols[i]:
+                    if col_key in filtered.columns:
+                        vals = filtered[col_key].dropna().unique().tolist()
+                        copy_text = "\n".join(str(v) for v in vals)
+                        st.download_button(
+                            f"📋 {col_label} ({len(vals)})",
+                            copy_text,
+                            f"{col_key.lower()}_values.txt",
+                            "text/plain",
+                            use_container_width=True,
+                            key=f"copy_{col_key}",
+                        )
+
+        # ── Column visibility ──
+        available_cols = [k for k in COLUMN_MAP if k in filtered.columns]
+        default_cols = [k for k in available_cols if COLUMN_MAP[k]["default"]]
+        friendly_options = {COLUMN_MAP[k]["label"]: k for k in available_cols}
+
+        with st.expander("👁 Show / Hide Columns"):
+            selected_friendly = st.multiselect(
+                "Choose columns to display",
+                options=[COLUMN_MAP[k]["label"] for k in available_cols],
+                default=[COLUMN_MAP[k]["label"] for k in default_cols],
+                key="col_select",
+            )
+        selected_cols = [friendly_options[f] for f in selected_friendly] if selected_friendly else default_cols
+
+        # ── Format display ──
+        display_df = filtered[selected_cols].copy()
+        rename_map = {k: COLUMN_MAP[k]["label"] for k in selected_cols if k in COLUMN_MAP}
+        display_df = display_df.rename(columns=rename_map)
+
+        for col_key, (true_label, false_label) in BOOL_COLS.items():
+            friendly_name = COLUMN_MAP.get(col_key, {}).get("label", col_key)
+            if friendly_name in display_df.columns:
+                display_df[friendly_name] = display_df[friendly_name].apply(
+                    lambda x, tl=true_label, fl=false_label: tl if x == True else fl
+                )
+
+        # ── Advanced conditional formatting ──
+        dno_friendly = COLUMN_MAP["IS_DNO"]["label"]
+        ship_friendly = COLUMN_MAP["SHIPPABLE_TAG"]["label"]
+        active_friendly = COLUMN_MAP["IS_ACTIVE"]["label"]
+        disc_friendly = COLUMN_MAP["IS_DISCONTINUED"]["label"]
+
+        def color_rows(row):
+            n = len(row)
+            # Priority: DNO > Discontinued > Inactive > Shippable
+            if dno_friendly in row.index and "⛔ YES — DNO" in str(row.get(dno_friendly, "")):
+                return ["background-color: rgba(239,68,68,0.10)"] * n  # Red
+            if disc_friendly in row.index and "⛔ Discontinued" in str(row.get(disc_friendly, "")):
+                return ["background-color: rgba(245,158,11,0.08)"] * n  # Orange
+            if active_friendly in row.index and "❌ Inactive" in str(row.get(active_friendly, "")):
+                return ["background-color: rgba(100,116,139,0.10)"] * n  # Grey
+            if ship_friendly in row.index and "✅ YES" in str(row.get(ship_friendly, "")):
+                return ["background-color: rgba(34,197,94,0.05)"] * n  # Green
+            return [""] * n
+
+        # Skip row coloring for large datasets (Styler has a row limit ~262k cells)
+        STYLE_LIMIT = 5000
+        if len(display_df) > STYLE_LIMIT:
+            st.info(f"📊 Showing {len(display_df):,} rows — row coloring is disabled for large datasets to keep the app responsive. Use filters to narrow results if you want colored rows.")
+            st.dataframe(
+                display_df,
+                use_container_width=True, hide_index=True,
+                height=600,
+            )
+        else:
+            st.dataframe(
+                display_df.style.apply(color_rows, axis=1),
+                use_container_width=True, hide_index=True,
+                height=min(len(display_df) * 38 + 40, 600),
+            )
+
+        # ── Export & Copy ──
+        st.markdown("### 📤 Export & Copy")
+
+        ex1, ex2, ex3, ex4 = st.columns(4)
+
+        # CSV exports
+        with ex1:
+            st.download_button(
+                "⬇️ All — CSV",
+                df[selected_cols].rename(columns=rename_map).to_csv(index=False),
+                f"catalogue_lookup_all_{datetime.date.today().isoformat()}.csv",
+                "text/csv", use_container_width=True,
+            )
+        with ex2:
+            st.download_button(
+                "⬇️ Filtered — CSV",
+                filtered[selected_cols].rename(columns=rename_map).to_csv(index=False),
+                f"catalogue_lookup_filtered_{datetime.date.today().isoformat()}.csv",
+                "text/csv", use_container_width=True,
+            )
+
+        # Excel exports
+        with ex3:
+            buffer_all = io.BytesIO()
+            df[selected_cols].rename(columns=rename_map).to_excel(buffer_all, index=False, engine="openpyxl")
+            st.download_button(
+                "⬇️ All — Excel",
+                buffer_all.getvalue(),
+                f"catalogue_lookup_all_{datetime.date.today().isoformat()}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        with ex4:
+            buffer_filt = io.BytesIO()
+            filtered[selected_cols].rename(columns=rename_map).to_excel(buffer_filt, index=False, engine="openpyxl")
+            st.download_button(
+                "⬇️ Filtered — Excel",
+                buffer_filt.getvalue(),
+                f"catalogue_lookup_filtered_{datetime.date.today().isoformat()}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
+        # Copy to clipboard — one-click button using HTML/JS component
+        st.markdown("")
+        with st.expander("📋 Copy to Clipboard — one click, includes headers"):
+            copy_df = filtered[selected_cols].rename(columns=rename_map)
+            tsv_text = copy_df.to_csv(index=False, sep="\t")
+
+            # Escape for embedding in JS
+            tsv_escaped = (
+                tsv_text.replace("\\", "\\\\")
+                .replace("`", "\\`")
+                .replace("$", "\\$")
+            )
+
+            row_count = len(copy_df)
+            col_count = len(copy_df.columns)
+
+            copy_html = f"""
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                <button id="copy-btn" onclick="copyToClipboard()" style="
+                    background:linear-gradient(135deg,#3b82f6,#6366f1);
+                    color:white;border:none;border-radius:8px;
+                    padding:10px 20px;font-size:14px;font-weight:600;
+                    cursor:pointer;box-shadow:0 2px 8px rgba(59,130,246,0.3);
+                    transition:all 0.2s;
+                ">📋 Copy {row_count} rows × {col_count} columns</button>
+                <span id="copy-status" style="font-size:13px;color:#64748b;"></span>
+            </div>
+            <textarea id="copy-data" style="position:absolute;left:-9999px;">{tsv_text}</textarea>
+            <script>
+                function copyToClipboard() {{
+                    const textarea = document.getElementById('copy-data');
+                    const status = document.getElementById('copy-status');
+                    const btn = document.getElementById('copy-btn');
+                    textarea.select();
+                    textarea.setSelectionRange(0, 99999);
+                    try {{
+                        navigator.clipboard.writeText(textarea.value).then(() => {{
+                            status.innerHTML = '✅ Copied! Paste into Excel or Google Sheets.';
+                            status.style.color = '#22c55e';
+                            btn.style.background = 'linear-gradient(135deg,#22c55e,#16a34a)';
+                            setTimeout(() => {{
+                                status.innerHTML = '';
+                                btn.style.background = 'linear-gradient(135deg,#3b82f6,#6366f1)';
+                            }}, 3000);
+                        }});
+                    }} catch (err) {{
+                        document.execCommand('copy');
+                        status.innerHTML = '✅ Copied!';
+                        status.style.color = '#22c55e';
+                    }}
+                }}
+            </script>
+            """
+            st.components.v1.html(copy_html, height=60)
+            st.caption(f"Click the button above — it copies {row_count} rows with column headers, ready to paste into Excel or Google Sheets.")
+
+            # Preview/fallback: show the text directly (no nested expander)
+            st.markdown("**Manual copy fallback** (if the button doesn't work):")
+            st.code(tsv_text, language=None)
 
 with fr_tab:
     st.markdown("")
@@ -2353,272 +2646,3 @@ with inventory_tab:
                 use_container_width=True, key="inv_dl_filt_xlsx",
             )
 
-
-with results_tab:
-    if "results_df" not in st.session_state or st.session_state.get("results_df", pd.DataFrame()).empty:
-        st.info("👈 Use **Search by ID** or **Browse by Brand** tab, then check results here.")
-    else:
-        df = st.session_state["results_df"].copy()
-        skus_count = st.session_state.get("skus_count", 0)
-        skus_list = st.session_state.get("skus_list", [])
-
-        # ── Missing items ──
-        missing = find_missing_items(skus_list, df)
-        if missing:
-            with st.expander(f"⚠️ {len(missing)} item(s) returned no results — click to see", expanded=False):
-                missing_html = "".join(f'<span class="missing-item">{m}</span>' for m in missing)
-                st.markdown(missing_html, unsafe_allow_html=True)
-
-        # ── Colored summary cards ──
-        dno_count = int((df["IS_DNO"] == True).sum()) if "IS_DNO" in df.columns else 0
-        shippable_count = int((df["SHIPPABLE_TAG"] == True).sum()) if "SHIPPABLE_TAG" in df.columns else 0
-        fba_count = int((df["LISTING_FULFILLMENT_TYPE"].str.upper() == "FBA").sum()) if "LISTING_FULFILLMENT_TYPE" in df.columns else 0
-        active_count = int((df["IS_ACTIVE"] == True).sum()) if "IS_ACTIVE" in df.columns else 0
-
-        mc1, mc2, mc3, mc4, mc5, mc6 = st.columns(6)
-        with mc1: st.markdown(f'<div class="metric-card mc-total"><div class="label">Total</div><div class="value">{len(df)}</div></div>', unsafe_allow_html=True)
-        with mc2: st.markdown(f'<div class="metric-card mc-dno"><div class="label">DNO = True</div><div class="value">{dno_count}</div></div>', unsafe_allow_html=True)
-        with mc3: st.markdown(f'<div class="metric-card mc-ship"><div class="label">Shippable</div><div class="value">{shippable_count}</div></div>', unsafe_allow_html=True)
-        with mc4: st.markdown(f'<div class="metric-card mc-noship"><div class="label">Not Shippable</div><div class="value">{len(df) - shippable_count}</div></div>', unsafe_allow_html=True)
-        with mc5: st.markdown(f'<div class="metric-card mc-fba"><div class="label">FBA</div><div class="value">{fba_count}</div></div>', unsafe_allow_html=True)
-        with mc6: st.markdown(f'<div class="metric-card mc-active"><div class="label">Active</div><div class="value">{active_count}</div></div>', unsafe_allow_html=True)
-
-        st.markdown("")
-
-        # ── Filters ──
-        st.markdown("### 🔽 Filters")
-        search_text = st.text_input("🔍 Search across all fields", placeholder="Type to search...", key="search_all")
-
-        # Region filter row
-        reg_col, mp_col, vn_col, dno_col = st.columns(4)
-        filtered = df.copy()
-
-        with reg_col:
-            sel_region = st.selectbox("🌍 Region", REGION_OPTIONS, key="f_region")
-            if sel_region == "Other":
-                # "Other" = any marketplace not assigned to a named region
-                mapped = set().union(*REGION_MAP.values())
-                filtered = filtered[~filtered["MARKETPLACE"].isin(mapped)]
-            elif sel_region != "All":
-                region_mps = REGION_MAP.get(sel_region, [])
-                filtered = filtered[filtered["MARKETPLACE"].isin(region_mps)]
-
-        with mp_col:
-            # Marketplace filter shows only marketplaces available after region filter
-            mp_vals = sorted(filtered["MARKETPLACE"].dropna().unique().tolist())
-            sel_mps = st.multiselect("Marketplace", options=mp_vals, default=[], key="f_mp", placeholder="All")
-            if sel_mps:
-                filtered = filtered[filtered["MARKETPLACE"].isin(sel_mps)]
-
-        with vn_col: filtered = multiselect_filter(filtered, "VENDOR", "Vendor", "f_vn")
-        with dno_col: filtered = bool_multiselect_filter(filtered, "IS_DNO", "DNO", "f_dno")
-
-        r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-        with r1c1: filtered = bool_multiselect_filter(filtered, "SHIPPABLE_TAG", "Shippable", "f_ship")
-        with r1c2: filtered = multiselect_filter(filtered, "LISTING_FULFILLMENT_TYPE", "Fulfillment Type", "f_ff")
-        with r1c3: filtered = multiselect_filter(filtered, "LISTING_TYPE", "Listing Type", "f_lt")
-        with r1c4: filtered = multiselect_filter(filtered, "COMMINGLED_STATUS", "Commingled", "f_cm")
-
-        r2c1, r2c2, r2c3, r2c4 = st.columns(4)
-        with r2c1:
-            if "IS_ACTIVE" in filtered.columns:
-                filtered = bool_multiselect_filter(filtered, "IS_ACTIVE", "Active", "f_active")
-        with r2c2:
-            if "IS_DISCONTINUED" in filtered.columns:
-                filtered = bool_multiselect_filter(filtered, "IS_DISCONTINUED", "Discontinued", "f_disc")
-        with r2c3:
-            if "CAN_EXPIRE" in filtered.columns:
-                filtered = bool_multiselect_filter(filtered, "CAN_EXPIRE", "Can Expire", "f_expire")
-        with r2c4:
-            if "DNO_REASON_CODE" in filtered.columns:
-                filtered = multiselect_filter(filtered, "DNO_REASON_CODE", "DNO Reason Code", "f_dno_rc")
-
-        if search_text.strip():
-            mask = filtered.astype(str).apply(
-                lambda row: row.str.contains(search_text.strip(), case=False).any(), axis=1
-            )
-            filtered = filtered[mask]
-
-        st.caption(f"Showing **{len(filtered)}** of **{len(df)}** results")
-
-        # ── Quick copy column buttons ──
-        with st.expander("📋 Quick Copy — grab a full column of values"):
-            copy_cols = {"SKU": "SKU", "LISTING_ID": "Listing ID", "ASIN": "ASIN", "MPN": "MPN", "MASTER_ID": "Master ID", "FNSKU": "FNSKU"}
-            cc_cols = st.columns(len(copy_cols))
-            for i, (col_key, col_label) in enumerate(copy_cols.items()):
-                with cc_cols[i]:
-                    if col_key in filtered.columns:
-                        vals = filtered[col_key].dropna().unique().tolist()
-                        copy_text = "\n".join(str(v) for v in vals)
-                        st.download_button(
-                            f"📋 {col_label} ({len(vals)})",
-                            copy_text,
-                            f"{col_key.lower()}_values.txt",
-                            "text/plain",
-                            use_container_width=True,
-                            key=f"copy_{col_key}",
-                        )
-
-        # ── Column visibility ──
-        available_cols = [k for k in COLUMN_MAP if k in filtered.columns]
-        default_cols = [k for k in available_cols if COLUMN_MAP[k]["default"]]
-        friendly_options = {COLUMN_MAP[k]["label"]: k for k in available_cols}
-
-        with st.expander("👁 Show / Hide Columns"):
-            selected_friendly = st.multiselect(
-                "Choose columns to display",
-                options=[COLUMN_MAP[k]["label"] for k in available_cols],
-                default=[COLUMN_MAP[k]["label"] for k in default_cols],
-                key="col_select",
-            )
-        selected_cols = [friendly_options[f] for f in selected_friendly] if selected_friendly else default_cols
-
-        # ── Format display ──
-        display_df = filtered[selected_cols].copy()
-        rename_map = {k: COLUMN_MAP[k]["label"] for k in selected_cols if k in COLUMN_MAP}
-        display_df = display_df.rename(columns=rename_map)
-
-        for col_key, (true_label, false_label) in BOOL_COLS.items():
-            friendly_name = COLUMN_MAP.get(col_key, {}).get("label", col_key)
-            if friendly_name in display_df.columns:
-                display_df[friendly_name] = display_df[friendly_name].apply(
-                    lambda x, tl=true_label, fl=false_label: tl if x == True else fl
-                )
-
-        # ── Advanced conditional formatting ──
-        dno_friendly = COLUMN_MAP["IS_DNO"]["label"]
-        ship_friendly = COLUMN_MAP["SHIPPABLE_TAG"]["label"]
-        active_friendly = COLUMN_MAP["IS_ACTIVE"]["label"]
-        disc_friendly = COLUMN_MAP["IS_DISCONTINUED"]["label"]
-
-        def color_rows(row):
-            n = len(row)
-            # Priority: DNO > Discontinued > Inactive > Shippable
-            if dno_friendly in row.index and "⛔ YES — DNO" in str(row.get(dno_friendly, "")):
-                return ["background-color: rgba(239,68,68,0.10)"] * n  # Red
-            if disc_friendly in row.index and "⛔ Discontinued" in str(row.get(disc_friendly, "")):
-                return ["background-color: rgba(245,158,11,0.08)"] * n  # Orange
-            if active_friendly in row.index and "❌ Inactive" in str(row.get(active_friendly, "")):
-                return ["background-color: rgba(100,116,139,0.10)"] * n  # Grey
-            if ship_friendly in row.index and "✅ YES" in str(row.get(ship_friendly, "")):
-                return ["background-color: rgba(34,197,94,0.05)"] * n  # Green
-            return [""] * n
-
-        # Skip row coloring for large datasets (Styler has a row limit ~262k cells)
-        STYLE_LIMIT = 5000
-        if len(display_df) > STYLE_LIMIT:
-            st.info(f"📊 Showing {len(display_df):,} rows — row coloring is disabled for large datasets to keep the app responsive. Use filters to narrow results if you want colored rows.")
-            st.dataframe(
-                display_df,
-                use_container_width=True, hide_index=True,
-                height=600,
-            )
-        else:
-            st.dataframe(
-                display_df.style.apply(color_rows, axis=1),
-                use_container_width=True, hide_index=True,
-                height=min(len(display_df) * 38 + 40, 600),
-            )
-
-        # ── Export & Copy ──
-        st.markdown("### 📤 Export & Copy")
-
-        ex1, ex2, ex3, ex4 = st.columns(4)
-
-        # CSV exports
-        with ex1:
-            st.download_button(
-                "⬇️ All — CSV",
-                df[selected_cols].rename(columns=rename_map).to_csv(index=False),
-                f"catalogue_lookup_all_{datetime.date.today().isoformat()}.csv",
-                "text/csv", use_container_width=True,
-            )
-        with ex2:
-            st.download_button(
-                "⬇️ Filtered — CSV",
-                filtered[selected_cols].rename(columns=rename_map).to_csv(index=False),
-                f"catalogue_lookup_filtered_{datetime.date.today().isoformat()}.csv",
-                "text/csv", use_container_width=True,
-            )
-
-        # Excel exports
-        with ex3:
-            buffer_all = io.BytesIO()
-            df[selected_cols].rename(columns=rename_map).to_excel(buffer_all, index=False, engine="openpyxl")
-            st.download_button(
-                "⬇️ All — Excel",
-                buffer_all.getvalue(),
-                f"catalogue_lookup_all_{datetime.date.today().isoformat()}.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-        with ex4:
-            buffer_filt = io.BytesIO()
-            filtered[selected_cols].rename(columns=rename_map).to_excel(buffer_filt, index=False, engine="openpyxl")
-            st.download_button(
-                "⬇️ Filtered — Excel",
-                buffer_filt.getvalue(),
-                f"catalogue_lookup_filtered_{datetime.date.today().isoformat()}.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-
-        # Copy to clipboard — one-click button using HTML/JS component
-        st.markdown("")
-        with st.expander("📋 Copy to Clipboard — one click, includes headers"):
-            copy_df = filtered[selected_cols].rename(columns=rename_map)
-            tsv_text = copy_df.to_csv(index=False, sep="\t")
-
-            # Escape for embedding in JS
-            tsv_escaped = (
-                tsv_text.replace("\\", "\\\\")
-                .replace("`", "\\`")
-                .replace("$", "\\$")
-            )
-
-            row_count = len(copy_df)
-            col_count = len(copy_df.columns)
-
-            copy_html = f"""
-            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-                <button id="copy-btn" onclick="copyToClipboard()" style="
-                    background:linear-gradient(135deg,#3b82f6,#6366f1);
-                    color:white;border:none;border-radius:8px;
-                    padding:10px 20px;font-size:14px;font-weight:600;
-                    cursor:pointer;box-shadow:0 2px 8px rgba(59,130,246,0.3);
-                    transition:all 0.2s;
-                ">📋 Copy {row_count} rows × {col_count} columns</button>
-                <span id="copy-status" style="font-size:13px;color:#64748b;"></span>
-            </div>
-            <textarea id="copy-data" style="position:absolute;left:-9999px;">{tsv_text}</textarea>
-            <script>
-                function copyToClipboard() {{
-                    const textarea = document.getElementById('copy-data');
-                    const status = document.getElementById('copy-status');
-                    const btn = document.getElementById('copy-btn');
-                    textarea.select();
-                    textarea.setSelectionRange(0, 99999);
-                    try {{
-                        navigator.clipboard.writeText(textarea.value).then(() => {{
-                            status.innerHTML = '✅ Copied! Paste into Excel or Google Sheets.';
-                            status.style.color = '#22c55e';
-                            btn.style.background = 'linear-gradient(135deg,#22c55e,#16a34a)';
-                            setTimeout(() => {{
-                                status.innerHTML = '';
-                                btn.style.background = 'linear-gradient(135deg,#3b82f6,#6366f1)';
-                            }}, 3000);
-                        }});
-                    }} catch (err) {{
-                        document.execCommand('copy');
-                        status.innerHTML = '✅ Copied!';
-                        status.style.color = '#22c55e';
-                    }}
-                }}
-            </script>
-            """
-            st.components.v1.html(copy_html, height=60)
-            st.caption(f"Click the button above — it copies {row_count} rows with column headers, ready to paste into Excel or Google Sheets.")
-
-            # Preview/fallback: show the text directly (no nested expander)
-            st.markdown("**Manual copy fallback** (if the button doesn't work):")
-            st.code(tsv_text, language=None)
