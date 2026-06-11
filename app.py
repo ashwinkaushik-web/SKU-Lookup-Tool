@@ -672,36 +672,62 @@ def run_fr_check(df, selected_attrs):
 # Inventory Lookup — query & helpers
 # ══════════════════════════════════════════════
 INVENTORY_QUERY_TEMPLATE = """
-WITH warehouse_stock AS (
+WITH wh_base AS (
+  -- Current-warehouse rows for the requested masters, tagged with a CW (central-warehouse)
+  -- region inferred from WAREHOUSE_NAME — the table has no region/country column.
+  -- Mapping confirmed from the live warehouse list (16 warehouses, 2026-06-11). If a
+  -- warehouse's stock isn't mapping, check its exact spelling in the CASE below.
   SELECT
-    MAX(DATE)                AS SNAPSHOT_DATE,
-    WAREHOUSE_NAME,
-    MASTER_ID,
-    MAX(PART_NUMBER_FINAL)   AS PART_NUMBER_FINAL,
-    MAX(TITLE)               AS WAREHOUSE_TITLE,
-    MAX(BRAND)               AS BRAND,
-    SUM(QUANTITY)            AS STOW_PICKABLE_QTY
+    MASTER_ID, WAREHOUSE_NAME, STORAGE_ID, STATUS, AREA, QUANTITY, DATE,
+    PART_NUMBER_FINAL, BRAND,
+    CASE
+      WHEN WAREHOUSE_NAME IN ('Hebron-Progress','Las Vegas','Lindon','Bethlehem','Kraus','CFS','Steelcase ND','Select Brands') THEN 'US'
+      WHEN WAREHOUSE_NAME IN ('CA-Milton','Toronto') THEN 'CA'
+      WHEN WAREHOUSE_NAME = 'Northampton' THEN 'GB'
+      WHEN WAREHOUSE_NAME IN ('Wroclaw','EU GMBH Refurb','Europe GMBH Refurb') THEN 'EU'
+      WHEN WAREHOUSE_NAME = 'Dubai' THEN 'AE'
+      WHEN WAREHOUSE_NAME = 'Melbourne' THEN 'AU'
+      WHEN WAREHOUSE_NAME IN ('Hong Kong Hub','HK Hub') THEN 'CN'
+    END AS CW_REGION
   FROM "ANALYTICS_DB"."REPORTING"."REPORT__WAREHOUSE_INVENTORY_BY_PRODUCT_CURRENT"
   WHERE MASTER_ID IN ({master_ids})
-    AND warehouse_name IN ({warehouse_list})
-    AND status = 'Sellable'
-    AND area IN ('A-MOD', 'Cage', 'F-MOD', 'B-Mod', 'BIO', 'OVERAGE', 'Shelving')
-  GROUP BY WAREHOUSE_NAME, MASTER_ID
+),
+warehouse_region AS (
+  -- CW Inventory = sellable, pickable units per (region, master).
+  -- "Pickable" areas = any storage module (…-MOD) plus named storage areas; transit /
+  -- processing areas (Crossdock, Shipping, Receiving, Sorting) are excluded.
+  SELECT
+    CW_REGION, MASTER_ID,
+    MAX(DATE)     AS SNAPSHOT_DATE,
+    SUM(QUANTITY) AS STOW_PICKABLE_QTY
+  FROM wh_base
+  WHERE CW_REGION IS NOT NULL
+    AND STATUS = 'Sellable'
+    AND (UPPER(AREA) LIKE '%-MOD' OR UPPER(AREA) IN ('CAGE','BIO','OVERAGE','SHELVING','COLD STORAGE','COLDSTORAGE'))
+  GROUP BY CW_REGION, MASTER_ID
+),
+warehouse_master AS (
+  -- Master-level attributes (region-independent) so BRAND / part number always show
+  SELECT
+    MASTER_ID,
+    MAX(PART_NUMBER_FINAL) AS PART_NUMBER_FINAL,
+    MAX(BRAND)             AS BRAND,
+    MAX(DATE)              AS SNAPSHOT_DATE
+  FROM wh_base
+  WHERE CW_REGION IS NOT NULL
+  GROUP BY MASTER_ID
 ),
 warehouse_attrs AS (
-  -- Storage IDs + status list per (warehouse, master) from the current-warehouse table.
-  -- NOTE: no status / area filter here (unlike warehouse_stock), so STATUS reflects the
-  -- full picture for the master in that warehouse (Sellable, Reserved, Unfulfillable, ...),
-  -- not just the Sellable + pickable subset that feeds CW Inventory.
+  -- Storage IDs + statuses + warehouse name(s) per (region, master).
+  -- No status/area filter, so STATUS reflects the full picture (Sellable, Reserved, …).
   SELECT
-    WAREHOUSE_NAME,
-    MASTER_ID,
-    LISTAGG(DISTINCT STORAGE_ID, ', ') WITHIN GROUP (ORDER BY STORAGE_ID) AS STORAGE_IDS,
-    LISTAGG(DISTINCT STATUS, ', ')     WITHIN GROUP (ORDER BY STATUS)     AS STATUSES
-  FROM "ANALYTICS_DB"."REPORTING"."REPORT__WAREHOUSE_INVENTORY_BY_PRODUCT_CURRENT"
-  WHERE MASTER_ID IN ({master_ids})
-    AND warehouse_name IN ({warehouse_list})
-  GROUP BY WAREHOUSE_NAME, MASTER_ID
+    CW_REGION, MASTER_ID,
+    LISTAGG(DISTINCT WAREHOUSE_NAME, ', ') WITHIN GROUP (ORDER BY WAREHOUSE_NAME) AS WAREHOUSE_NAMES,
+    LISTAGG(DISTINCT STORAGE_ID, ', ')     WITHIN GROUP (ORDER BY STORAGE_ID)     AS STORAGE_IDS,
+    LISTAGG(DISTINCT STATUS, ', ')         WITHIN GROUP (ORDER BY STATUS)         AS STATUSES
+  FROM wh_base
+  WHERE CW_REGION IS NOT NULL
+  GROUP BY CW_REGION, MASTER_ID
 ),
 inventory_hub AS (
   SELECT
@@ -741,31 +767,18 @@ inventory_hub AS (
     {network_filter}
     {inv_type_filter}
 ),
-warehouse_pivot AS (
+hub_reserved_pfs AS (
+  -- Pattern PFS warehouse-reserved per (region, master)
   SELECT
-    MASTER_ID,
-    MAX(SNAPSHOT_DATE) AS SNAPSHOT_DATE,
-    MAX(PART_NUMBER_FINAL) AS PART_NUMBER_FINAL,
-    MAX(WAREHOUSE_TITLE) AS WAREHOUSE_TITLE,
-    MAX(BRAND) AS BRAND,
-    SUM(CASE WHEN WAREHOUSE_NAME = 'Northampton' THEN STOW_PICKABLE_QTY END) AS NORTHAMPTON_STOW_PICKABLE_QTY,
-    SUM(CASE WHEN WAREHOUSE_NAME = 'Wroclaw' THEN STOW_PICKABLE_QTY END) AS WROCLAW_STOW_PICKABLE_QTY
-  FROM warehouse_stock
-  GROUP BY MASTER_ID
-),
-hub_reserved_pfs_by_region AS (
-  SELECT
-    MASTER_ID,
-    SUM(CASE WHEN REGION = 'GB' AND FULFILLMENT_NETWORK = 'Pattern PFS'
-             THEN PATTERN_WAREHOUSE_RESERVED_FOR_MARKETPLACE END) AS GB_PFS_PATTERN_WH_RESERVED,
-    SUM(CASE WHEN REGION = 'EU' AND FULFILLMENT_NETWORK = 'Pattern PFS'
-             THEN PATTERN_WAREHOUSE_RESERVED_FOR_MARKETPLACE END) AS EU_PFS_PATTERN_WH_RESERVED
+    MASTER_ID, REGION,
+    SUM(CASE WHEN FULFILLMENT_NETWORK = 'Pattern PFS'
+             THEN PATTERN_WAREHOUSE_RESERVED_FOR_MARKETPLACE END) AS PFS_RESERVED
   FROM inventory_hub
-  GROUP BY MASTER_ID
+  GROUP BY MASTER_ID, REGION
 )
 SELECT
-  COALESCE(ih.MASTER_ID, wp.MASTER_ID) AS MASTER_ID,
-  ih.PART_NUMBER, wp.PART_NUMBER_FINAL,
+  COALESCE(ih.MASTER_ID, wm.MASTER_ID) AS MASTER_ID,
+  ih.PART_NUMBER, wm.PART_NUMBER_FINAL,
   -- ASIN backfill: the hub's per-row ASIN is blank for some pools (esp. multi-country
   -- EU / Pan-EU). Fill blanks with any ASIN known for the same Master ID, then with the
   -- first entry of ASIN_LIST. ASIN_RAW keeps the exact untouched per-pool value.
@@ -776,28 +789,21 @@ SELECT
   ) AS ASIN,
   ih.ASIN AS ASIN_RAW,
   ih.ASIN_LIST, ih.HUB_TITLE AS TITLE,
-  wp.BRAND, ih.VENDOR, wp.SNAPSHOT_DATE,
+  wm.BRAND, ih.VENDOR, wm.SNAPSHOT_DATE,
   ih.REGION, ih.INVENTORY_POOL, ih.FULFILLMENT_NETWORK,
   ih.INVENTORY_TYPE, ih.BUNDLE_TYPE, ih.DNO_STATUS,
   ih.WHOLESALE_PRICE_USD,
-  -- Current-warehouse attributes (region-aware: NH for GB, WR for EU)
-  CASE WHEN ih.REGION = 'GB' THEN 'Northampton'
-       WHEN ih.REGION = 'EU' THEN 'Wroclaw' END AS WAREHOUSE_NAME,
+  -- Current-warehouse attributes (region-matched: hub REGION = warehouse CW region)
+  wa.WAREHOUSE_NAMES AS WAREHOUSE_NAME,
   wa.STORAGE_IDS,
   wa.STATUSES AS WAREHOUSE_STATUS,
-  -- Core block (region-aware unified columns)
+  -- Core block (region-aware via the region join)
   ih.FULFILLABLE,
+  wr.STOW_PICKABLE_QTY AS STOW_PICKABLE_QTY,
+  hr.PFS_RESERVED AS PFS_RESERVED,
   CASE
-    WHEN ih.REGION = 'GB' THEN wp.NORTHAMPTON_STOW_PICKABLE_QTY
-    WHEN ih.REGION = 'EU' THEN wp.WROCLAW_STOW_PICKABLE_QTY
-  END AS STOW_PICKABLE_QTY,
-  CASE
-    WHEN ih.REGION = 'GB' THEN hr.GB_PFS_PATTERN_WH_RESERVED
-    WHEN ih.REGION = 'EU' THEN hr.EU_PFS_PATTERN_WH_RESERVED
-  END AS PFS_RESERVED,
-  CASE
-    WHEN ih.REGION = 'GB' THEN COALESCE(wp.NORTHAMPTON_STOW_PICKABLE_QTY, 0) - COALESCE(hr.GB_PFS_PATTERN_WH_RESERVED, 0)
-    WHEN ih.REGION = 'EU' THEN COALESCE(wp.WROCLAW_STOW_PICKABLE_QTY, 0) - COALESCE(hr.EU_PFS_PATTERN_WH_RESERVED, 0)
+    WHEN wr.STOW_PICKABLE_QTY IS NULL AND hr.PFS_RESERVED IS NULL THEN NULL
+    ELSE COALESCE(wr.STOW_PICKABLE_QTY, 0) - COALESCE(hr.PFS_RESERVED, 0)
   END AS ACTUAL_AVAILABLE_QTY,
   ih.UNFULFILLABLE,
   -- Secondary metrics
@@ -820,11 +826,6 @@ SELECT
   ih.FULFILLMENT_CHANNEL_UNITS_PATTERN_OWNED_WOS_DEFAULT_FCST,
   ih.PIPELINE_UNITS_PATTERN_OWNED_WOS,
   ih.PIPELINE_UNITS_PATTERN_OWNED_WOS_DEFAULT_FCST,
-  -- Per-warehouse breakouts (hidden by default)
-  wp.NORTHAMPTON_STOW_PICKABLE_QTY,
-  wp.WROCLAW_STOW_PICKABLE_QTY,
-  hr.GB_PFS_PATTERN_WH_RESERVED,
-  hr.EU_PFS_PATTERN_WH_RESERVED,
   -- USD values (hidden by default)
   ih.FULFILLABLE_VALUE_USD, ih.UNFULFILLABLE_VALUE_USD,
   ih.OUTBOUND_RESERVED_VALUE_USD, ih.INBOUND_VALUE_USD,
@@ -836,12 +837,13 @@ SELECT
   ih.FULFILLMENT_CHANNEL_VALUE_USD_PATTERN_OWNED,
   ih.PIPELINE_VALUE_USD_PATTERN_OWNED
 FROM inventory_hub ih
-FULL OUTER JOIN warehouse_pivot wp ON ih.MASTER_ID = wp.MASTER_ID
-LEFT JOIN hub_reserved_pfs_by_region hr ON COALESCE(ih.MASTER_ID, wp.MASTER_ID) = hr.MASTER_ID
+FULL OUTER JOIN warehouse_master wm ON ih.MASTER_ID = wm.MASTER_ID
+LEFT JOIN warehouse_region wr
+  ON wr.MASTER_ID = COALESCE(ih.MASTER_ID, wm.MASTER_ID) AND wr.CW_REGION = ih.REGION
+LEFT JOIN hub_reserved_pfs hr
+  ON hr.MASTER_ID = COALESCE(ih.MASTER_ID, wm.MASTER_ID) AND hr.REGION = ih.REGION
 LEFT JOIN warehouse_attrs wa
-  ON wa.MASTER_ID = COALESCE(ih.MASTER_ID, wp.MASTER_ID)
-  AND wa.WAREHOUSE_NAME = CASE WHEN ih.REGION = 'GB' THEN 'Northampton'
-                               WHEN ih.REGION = 'EU' THEN 'Wroclaw' END
+  ON wa.MASTER_ID = COALESCE(ih.MASTER_ID, wm.MASTER_ID) AND wa.CW_REGION = ih.REGION
 ORDER BY MASTER_ID, ih.REGION, ih.FULFILLMENT_NETWORK
 """
 
@@ -859,19 +861,19 @@ def build_inventory_query(master_ids, regions=None, networks=None, inv_types=Non
     def safe(s): return s.strip().replace("'", "''")
     quoted = ", ".join(f"'{safe(m)}'" for m in master_ids if m.strip())
 
-    # Build region filter for inventory_hub
+    # Build region filter for inventory_hub — empty = ALL regions (GB, EU, US, …)
     if regions and len(regions) > 0:
         region_list = ", ".join(f"'{safe(r)}'" for r in regions)
         region_filter = f"AND REGION IN ({region_list})"
     else:
-        region_filter = "AND REGION IN ('GB', 'EU')"
+        region_filter = ""
 
-    # Build network filter
+    # Build network filter — empty = ALL networks
     if networks and len(networks) > 0:
         net_list = ", ".join(f"'{safe(n)}'" for n in networks)
         network_filter = f"AND FULFILLMENT_NETWORK IN ({net_list})"
     else:
-        network_filter = "AND FULFILLMENT_NETWORK IN ('Pattern PFS', 'Amazon FBA')"
+        network_filter = ""
 
     # Build inventory_type filter
     if inv_types and len(inv_types) > 0:
@@ -880,22 +882,11 @@ def build_inventory_query(master_ids, regions=None, networks=None, inv_types=Non
     else:
         inv_type_filter = ""
 
-    # Build warehouse list based on regions (to also reduce warehouse_stock pull)
-    warehouse_map = {"GB": "Northampton", "EU": "Wroclaw"}
-    if regions and len(regions) > 0:
-        warehouses = [warehouse_map[r] for r in regions if r in warehouse_map]
-        if not warehouses:
-            warehouses = ["Northampton", "Wroclaw"]
-    else:
-        warehouses = ["Northampton", "Wroclaw"]
-    warehouse_list = ", ".join(f"'{w}'" for w in warehouses)
-
     return INVENTORY_QUERY_TEMPLATE.format(
         master_ids=quoted,
         region_filter=region_filter,
         network_filter=network_filter,
         inv_type_filter=inv_type_filter,
-        warehouse_list=warehouse_list,
     ).strip()
 
 
@@ -964,7 +955,7 @@ def _cached_get_brand_master_ids(brand_name, limit, regions_tuple, networks_tupl
         rlist = ", ".join(f"'{safe(r)}'" for r in regions)
         region_clause = f"AND REGION IN ({rlist})"
     else:
-        region_clause = "AND REGION IN ('GB', 'EU')"
+        region_clause = ""
 
     network_clause = ""
     if networks and len(networks) > 0:
@@ -1057,10 +1048,6 @@ INVENTORY_COLUMNS = [
     # ── Per-warehouse Breakouts (hidden by default) ──
     {"key": "STORAGE_IDS",          "label": "Storage ID(s)",          "default": True,  "type": "str", "group": "Warehouse Detail", "desc": "Storage / bin locations holding this master in the warehouse (comma-separated, from the current-warehouse table). Covers all statuses, not just sellable."},
     {"key": "WAREHOUSE_STATUS",     "label": "Warehouse Status",       "default": True,  "type": "str", "group": "Warehouse Detail", "desc": "Stock statuses present for this master in the warehouse (e.g. Sellable, Reserved, Unfulfillable). From the current-warehouse table."},
-    {"key": "NORTHAMPTON_STOW_PICKABLE_QTY", "label": "NH CW Inventory",        "default": False, "type": "num", "group": "Warehouse Detail", "desc": "Northampton CW Inventory units"},
-    {"key": "WROCLAW_STOW_PICKABLE_QTY",     "label": "WR CW Inventory",        "default": False, "type": "num", "group": "Warehouse Detail", "desc": "Wroclaw CW Inventory units"},
-    {"key": "GB_PFS_PATTERN_WH_RESERVED",    "label": "GB PFS Reserved",        "default": False, "type": "num", "group": "Warehouse Detail", "desc": "GB Pattern PFS warehouse reserved units"},
-    {"key": "EU_PFS_PATTERN_WH_RESERVED",    "label": "EU PFS Reserved",        "default": False, "type": "num", "group": "Warehouse Detail", "desc": "EU Pattern PFS warehouse reserved units"},
     # ── USD Values (all hidden by default) ──
     {"key": "FULFILLABLE_VALUE_USD",         "label": "Fulfillable $",          "default": False, "type": "num", "group": "USD", "desc": "Fulfillable units value in USD"},
     {"key": "UNFULFILLABLE_VALUE_USD",       "label": "Unfulfillable $",        "default": False, "type": "num", "group": "USD", "desc": "Unfulfillable units value in USD"},
@@ -2072,7 +2059,8 @@ with fr_tab:
 with inventory_tab:
     st.markdown("")
     st.markdown("### 📦 Inventory Lookup")
-    st.caption("Real-time stock levels from Northampton & Wroclaw warehouses, joined with the Inventory Hub. Search by Master ID, Listing ID, or Brand.")
+    st.caption("Stock levels across **all regions** (GB, EU, US, CA, AU, AE, CN, …) from the Inventory Hub, joined with live central-warehouse stock. Search by Master ID, Listing ID, ASIN, or Brand.")
+    st.caption("ℹ️ Hub metrics (Fulfillable, Inbound, On Order, etc.) cover every region. The warehouse columns — **CW Inventory, Pickable, PFS Reserved, Storage ID(s), Warehouse Status, Warehouse** — populate for any region with a Pattern central warehouse (GB→Northampton, EU→Wroclaw, US→Hebron/Las Vegas/Lindon/…, CA→Milton, AE→Dubai, AU→Melbourne, CN→Hong Kong). Regions without a mapped warehouse show blanks there.")
     st.markdown("")
 
     # ── SEARCH MODE TOGGLE ──
@@ -2095,23 +2083,26 @@ with inventory_tab:
 
     # ── UPSTREAM FILTERS (apply to Snowflake query — reduce data volume) ──
     with st.expander("⚡ Pre-fetch Filters (faster queries)", expanded=False):
-        st.caption("These filters are applied **at the Snowflake level** — only matching rows will be fetched. Defaults are open (Both / All) so you don't miss anything.")
+        st.caption("These filters are applied **at the Snowflake level** — only matching rows will be fetched. Leave any of them empty to pull **everything** (all regions, all networks, all types).")
         uf_c1, uf_c2, uf_c3 = st.columns(3)
         with uf_c1:
             inv_uf_region = st.multiselect(
                 "Region",
-                options=["GB", "EU"],
-                default=["GB", "EU"],
+                options=["GB", "EU", "US", "CA", "AU", "AE", "MX", "BR", "CN", "JP", "SG"],
+                default=[],
                 key="inv_uf_region",
-                help="Pre-filter by region. Both selected = no region restriction.",
+                placeholder="All regions (no filter)",
+                help="Leave empty for all regions. Pick one or more to restrict. GB / EU are the only regions backed by Pattern's Northampton / Wroclaw warehouses today, so the warehouse-only columns (CW Inventory, Pickable, etc.) populate for those two.",
             )
         with uf_c2:
             inv_uf_network = st.multiselect(
                 "Fulfillment Network",
-                options=["Pattern PFS", "Amazon FBA"],
-                default=["Pattern PFS", "Amazon FBA"],
+                options=["Amazon FBA", "Pattern PFS", "Bol FBB", "Coupang CFS",
+                         "Noon FBN", "Walmart WFS", "Zalando ZFS"],
+                default=[],
                 key="inv_uf_network",
-                help="Pre-filter by network.",
+                placeholder="All networks (no filter)",
+                help="Leave empty for all networks. Pick one or more to restrict.",
             )
         with uf_c3:
             inv_uf_inv_type = st.multiselect(
@@ -2127,7 +2118,7 @@ with inventory_tab:
     inv_run_triggered = False
 
     # Capture upstream filter values for use in queries below
-    # Empty list = no filter (build_inventory_query defaults to GB,EU + both networks)
+    # Empty list = no filter (build_inventory_query then pulls ALL regions / networks)
     uf_regions = inv_uf_region if inv_uf_region else None
     uf_networks = inv_uf_network if inv_uf_network else None
     uf_inv_types = inv_uf_inv_type if inv_uf_inv_type else None
