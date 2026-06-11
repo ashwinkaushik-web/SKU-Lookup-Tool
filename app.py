@@ -1150,12 +1150,11 @@ st.markdown('<div class="main-header"><div class="header-icon">📦</div><div>'
 # ══════════════════════════════════════════════
 REGION_MAP = {
     "UK": [
-        "Amazon.co.uk", "TikTok UK", "Ebay UK", "Tesco",
+        "Amazon.co.uk", "TikTok UK", "Ebay UK", "Tesco", "Tesco (DEPRECATED)",
     ],
     "EU": [
         "Amazon.de", "Amazon.fr", "Amazon.es", "Amazon.it", "Amazon.nl",
         "Amazon.pl", "Amazon.se", "Amazon.com.be", "Amazon.ie", "Amazon.com.tr",
-        "Amazon.ae", "Amazon.sa", "Noon",
         "Bol.com", "Bol.com (BE)",
         "Cdiscount", "Ebay DE", "Ebay EU",
         "MediaMarkt", "Otto", "EU DTC", "EU Amazon", "Allegro",
@@ -1163,7 +1162,35 @@ REGION_MAP = {
         "Zalando CH", "Zalando BE", "Zalando NL", "Zalando PL", "Zalando SE",
         "Zalando DK", "Zalando FI", "Zalando LU",
     ],
+    "Middle East": [
+        "Amazon.ae", "Amazon.sa", "Noon",
+    ],
+    "US": [
+        "Amazon.com", "Walmart US", "Best Buy US", "Target+", "Kohl's",
+        "Macys.com", "BedBathandBeyond.com", "Belk.com", "Kroger.com", "Lowe's",
+        "Costco", "Nordstrom", "TikTok US", "Ebay US", "SHEIN US", "Shopify US",
+        "API Orders US",
+    ],
+    "Australia": [
+        "Amazon.com.au", "Catch AU", "Ebay AU", "B2B AU", "Shopify AU",
+    ],
+    "Canada": [
+        "Amazon.ca", "Walmart CA", "Best Buy CA", "B2B CA", "API Orders CA",
+    ],
+    "APAC": [
+        "Amazon.co.jp", "Amazon.sg", "B2B CN", "B2B SEA", "Aikucun", "HKTVmall",
+        "Jingdong", "Jingdong B2B", "Jingdong CG", "Jingdong VC", "Kaola",
+        "Kidswant", "Kuaishou", "Meituan", "Onion Global", "Pinduoduo", "Poizon",
+        "Rakuten JP", "Red", "Weidian", "Yin He", "Youzan", "Coupang KR",
+        "Naver KR", "Lazada ID", "Lazada MY", "Lazada PH", "Lazada SG",
+        "Shopee MY", "Shopee PH", "Shopee SG", "Shopify HK", "Shopify MY",
+        "Shopify SG", "TikTok CN", "Tmall CN", "Tmall VC", "APAC General",
+    ],
 }
+
+# Region dropdown options (shared by Results + Brand tabs).
+# "Other" = any marketplace not mapped to a named region above (derived by exclusion).
+REGION_OPTIONS = ["All", "UK", "EU", "Middle East", "US", "Australia", "Canada", "APAC", "Other"]
 
 # ══════════════════════════════════════════════
 # Input + Results in tabs
@@ -1255,7 +1282,7 @@ with brand_tab:
                                   key="brand_select", placeholder="Start typing to search...")
 
     with bb2:
-        brand_region = st.selectbox("Region", ["All", "UK", "EU"], key="brand_region")
+        brand_region = st.selectbox("Region", REGION_OPTIONS, key="brand_region")
 
     with bb3:
         result_limit = st.selectbox("Max Results", ["500", "1000", "2000", "5000", "No limit"],
@@ -1264,7 +1291,10 @@ with brand_tab:
     if sel_brand:
         # Determine region marketplaces
         region_mps = None
-        if brand_region != "All":
+        exclude_mapped = False
+        if brand_region == "Other":
+            exclude_mapped = True            # fetch all, then keep only un-mapped marketplaces
+        elif brand_region != "All":
             region_mps = REGION_MAP.get(brand_region, [])
 
         # Determine limit
@@ -1279,6 +1309,9 @@ with brand_tab:
 
             try:
                 df = run_brand_lookup(sel_brand, region_mps, limit_val)
+                if exclude_mapped and not df.empty:
+                    mapped = set().union(*REGION_MAP.values())
+                    df = df[~df["MARKETPLACE"].isin(mapped)]
                 progress_bar.progress(80, text="Processing results...")
                 time.sleep(0.2)
 
@@ -2361,8 +2394,12 @@ with results_tab:
         filtered = df.copy()
 
         with reg_col:
-            sel_region = st.selectbox("🌍 Region", ["All", "UK", "EU"], key="f_region")
-            if sel_region != "All":
+            sel_region = st.selectbox("🌍 Region", REGION_OPTIONS, key="f_region")
+            if sel_region == "Other":
+                # "Other" = any marketplace not assigned to a named region
+                mapped = set().union(*REGION_MAP.values())
+                filtered = filtered[~filtered["MARKETPLACE"].isin(mapped)]
+            elif sel_region != "All":
                 region_mps = REGION_MAP.get(sel_region, [])
                 filtered = filtered[filtered["MARKETPLACE"].isin(region_mps)]
 
