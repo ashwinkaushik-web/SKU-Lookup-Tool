@@ -2,7 +2,6 @@
 Product Catalogue Lookup — Pattern
 Streamlit Cloud | Key-pair auth | No login needed
 """
-
 import streamlit as st
 import pandas as pd
 import snowflake.connector
@@ -23,7 +22,6 @@ st.markdown("""
     .header-icon {width:48px;height:48px;background:linear-gradient(135deg,#3b82f6,#6366f1);border-radius:12px;display:grid;place-items:center;font-size:22px;color:#fff;box-shadow:0 0 24px rgba(59,130,246,0.3);flex-shrink:0;}
     .header-title {font-size:28px;font-weight:700;margin:0;}
     .header-sub {font-size:14px;color:#64748b;margin:0;}
-
     /* Colored metric cards */
     .metric-card {border-radius:12px;padding:18px 22px;border:1px solid rgba(255,255,255,0.06);}
     .metric-card .label {font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;opacity:0.8;}
@@ -34,27 +32,21 @@ st.markdown("""
     .mc-noship {background:rgba(245,158,11,0.12);color:#fbbf24;}
     .mc-fba {background:rgba(168,85,247,0.12);color:#c084fc;}
     .mc-active {background:rgba(6,182,212,0.12);color:#22d3ee;}
-
     /* Missing items */
     .missing-item {display:inline-block;background:rgba(239,68,68,0.15);color:#f87171;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:500;margin:2px 4px;}
-
     #MainMenu {visibility:hidden;}
     footer {visibility:hidden;}
-
     /* Sidebar */
     div[data-testid="stSidebar"] {background:rgba(13,17,23,0.97);}
     .sidebar-section {background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:14px;margin-bottom:12px;}
     .sidebar-section h4 {margin:0 0 8px 0;font-size:14px;}
     .sidebar-section p {margin:0;font-size:12px;color:#94a3b8;line-height:1.5;}
-
     /* Usage counter */
     .usage-badge {background:linear-gradient(135deg,rgba(59,130,246,0.15),rgba(99,102,241,0.15));border:1px solid rgba(59,130,246,0.2);border-radius:10px;padding:12px 14px;text-align:center;margin-bottom:12px;}
     .usage-badge .num {font-size:28px;font-weight:700;color:#60a5fa;}
     .usage-badge .lbl {font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:#94a3b8;margin-top:2px;}
-
     /* Copy buttons */
     .copy-section {background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:10px;margin-top:8px;}
-
     /* ── FR Check Redesign ── */
     .fr-summary-tile {background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px 18px;}
     .fr-summary-tile .lbl {font-size:10px;color:#7d8590;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;}
@@ -66,7 +58,6 @@ st.markdown("""
     .fr-summary-tile.missing {background:rgba(210,153,34,0.10);border-color:rgba(210,153,34,0.3);}
     .fr-summary-tile.missing .val {color:#d29922;}
     .fr-summary-tile.total .val {color:#60a5fa;}
-
     /* Listing cards */
     .fr-card {background:#161b22;border:1px solid #30363d;border-radius:10px;margin-bottom:10px;overflow:hidden;}
     .fr-card.flagged {border-left:3px solid #f85149;}
@@ -84,7 +75,6 @@ st.markdown("""
     .fr-attr-dot.g {background:rgba(46,160,67,0.18);color:#3fb950;}
     .fr-attr-dot.r {background:rgba(248,81,73,0.18);color:#f85149;}
     .fr-attr-dot.i {background:rgba(99,110,123,0.18);color:#8b949e;}
-
     /* Attribute details grid */
     .fr-attr-grid {display:grid;grid-template-columns:repeat(2, 1fr);gap:8px;}
     .fr-attr-row {display:flex;align-items:center;gap:10px;padding:10px 12px;background:#161b22;border-radius:6px;border-left:3px solid transparent;}
@@ -94,7 +84,6 @@ st.markdown("""
     .fr-attr-row .nm {flex:1;font-size:12px;color:#c9d1d9;font-weight:500;}
     .fr-attr-row .vl {font-family:monospace;font-size:11px;color:#7d8590;}
     .fr-attr-row .mk {font-size:13px;}
-
     /* ── Inventory Summary Cards (2-row layout, PFS/FBA split) ── */
     .inv-card {
         background:#161b22;
@@ -171,7 +160,6 @@ if "lookup_count" not in st.session_state:
 if "total_items_looked_up" not in st.session_state:
     st.session_state["total_items_looked_up"] = 0
 
-
 # ══════════════════════════════════════════════
 # Snowflake connection
 # ══════════════════════════════════════════════
@@ -197,7 +185,6 @@ def get_connection():
 def build_query(skus):
     def safe(s): return s.strip().replace("'", "''")
     upper_list = ", ".join(f"UPPER('{safe(s)}')" for s in skus if s.strip())
-
     # ── PERFORMANCE NOTE ──
     # The original query did:
     #   q1 = full scan of LISTINGS + 5 joins  (millions of rows)
@@ -209,7 +196,6 @@ def build_query(skus):
     # Now we push the filter into q1 and q2 directly, so each CTE only fetches
     # the small set of rows matching the user's input — typically 1-50 rows.
     # The joins now operate on these tiny sets — turns 60sec → ~2-5sec.
-
     return f"""
 WITH q1 AS (
     SELECT c.name AS marketplace, par.name AS vendor, a.Listing_MP_Primary_ID AS sku,
@@ -314,21 +300,17 @@ def run_lookup(skus):
 def build_brand_query(vendor, region_marketplaces=None, limit=None):
     """Build query to fetch all listings for a brand/vendor, optionally filtered by region."""
     safe_vendor = vendor.replace("'", "''")
-
     mp_filter_q1 = ""
     mp_filter_q2 = ""
     if region_marketplaces:
         mp_list = ", ".join(f"UPPER('{mp}')" for mp in region_marketplaces)
         mp_filter_q1 = f"AND UPPER(c.name) IN ({mp_list})"
         mp_filter_q2 = f"AND UPPER(pc.MARKETPLACE_NAME) IN ({mp_list})"
-
     limit_clause = f"LIMIT {limit}" if limit else ""
-
     # ── PERFORMANCE NOTE ──
     # The vendor filter is pushed into BOTH q1 (via partners.name) and q2 (via VENDOR_NAME)
     # so each CTE only fetches rows for this specific brand instead of full table scans.
     # Same trick as build_query() — turns slow brand fetches into fast ones.
-
     return f"""
 WITH q1 AS (
     SELECT c.name AS marketplace, par.name AS vendor, a.Listing_MP_Primary_ID AS sku,
@@ -467,12 +449,10 @@ def build_fr_query(ids, id_type="LISTING_ID"):
     """
     def safe(s): return s.strip().replace("'", "''")
     upper_list = ", ".join(f"UPPER('{safe(s)}')" for s in ids if s.strip())
-
     if id_type == "SKU":
         where_clause = f"WHERE UPPER(pc.MARKETPLACE_PRIMARY_ID) IN ({upper_list})"
     else:  # LISTING_ID
         where_clause = f"WHERE UPPER(pc.LISTING_ID) IN ({upper_list})"
-
     return f"""
 SELECT
     pc.LISTING_ID,
@@ -551,7 +531,6 @@ def _linked_check(row):
         return v and v != "0" and _lo(v) not in ("false", "no", "none")
 
     has_any_plan = has_plan(lp) or has_plan(ip)
-
     # Bypass: Commingled + B0 + Glass=N -> auto-pass
     if cm and b0 and not gl:
         return {"ok": True, "why": "Comm+B0+NoGlass — bypass"}
@@ -851,7 +830,6 @@ ORDER BY MASTER_ID, ih.REGION, ih.FULFILLMENT_NETWORK
 def build_inventory_query(master_ids, regions=None, networks=None, inv_types=None):
     """
     Build inventory query for given master IDs with optional upstream filters.
-
     Args:
         master_ids: list of master IDs
         regions: list of regions to include (e.g. ['GB'], ['EU'], ['GB','EU']). None = both.
@@ -860,28 +838,24 @@ def build_inventory_query(master_ids, regions=None, networks=None, inv_types=Non
     """
     def safe(s): return s.strip().replace("'", "''")
     quoted = ", ".join(f"'{safe(m)}'" for m in master_ids if m.strip())
-
     # Build region filter for inventory_hub — empty = ALL regions (GB, EU, US, …)
     if regions and len(regions) > 0:
         region_list = ", ".join(f"'{safe(r)}'" for r in regions)
         region_filter = f"AND REGION IN ({region_list})"
     else:
         region_filter = ""
-
     # Build network filter — empty = ALL networks
     if networks and len(networks) > 0:
         net_list = ", ".join(f"'{safe(n)}'" for n in networks)
         network_filter = f"AND FULFILLMENT_NETWORK IN ({net_list})"
     else:
         network_filter = ""
-
     # Build inventory_type filter
     if inv_types and len(inv_types) > 0:
         type_list = ", ".join(f"'{safe(t)}'" for t in inv_types)
         inv_type_filter = f"AND INVENTORY_TYPE IN ({type_list})"
     else:
         inv_type_filter = ""
-
     return INVENTORY_QUERY_TEMPLATE.format(
         master_ids=quoted,
         region_filter=region_filter,
@@ -943,6 +917,47 @@ def resolve_listing_to_master(listing_ids):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def _cached_resolve_to_master(values_tuple, id_type):
+    """Resolve ASINs or Part Numbers to Master IDs.
+    id_type: 'ASIN' (via catalog) or 'PART_NUMBER' (via Inventory Hub).
+    Returns {'masters': [...], 'matched_keys': [...]}.
+    """
+    values = list(values_tuple)
+    if not values:
+        return {"masters": [], "matched_keys": []}
+    def safe(s): return s.strip().replace("'", "''")
+    upper_list = ", ".join(f"UPPER('{safe(v)}')" for v in values if v.strip())
+    if id_type == "ASIN":
+        query = f"""
+SELECT DISTINCT UPPER(a.LISTING_MP_PAGE_ID) AS KEY, b.MASTER_ID AS MASTER_ID
+FROM ANALYTICS_DB.STG_CATALOG.STG_CATALOG__LISTINGS a
+LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__PRODUCTS b ON b.ID = a.PRODUCT_ID
+WHERE UPPER(a.LISTING_MP_PAGE_ID) IN ({upper_list})
+  AND b.MASTER_ID IS NOT NULL
+"""
+    else:  # PART_NUMBER — resolved against the Inventory Hub's PART_NUMBER column
+        query = f"""
+SELECT DISTINCT UPPER(PART_NUMBER) AS KEY, MASTER_ID
+FROM PATTERN_DB.OPERATIONS.INVENTORY_HUB_NORMALIZED_INVENTORY_ITEMS
+WHERE UPPER(PART_NUMBER) IN ({upper_list})
+  AND MASTER_ID IS NOT NULL
+"""
+    conn = get_connection()
+    df = pd.read_sql(query, conn)
+    return {
+        "masters": sorted(df["MASTER_ID"].dropna().astype(str).unique().tolist()),
+        "matched_keys": sorted(df["KEY"].dropna().astype(str).unique().tolist()),
+    }
+
+
+def resolve_to_master(values, id_type):
+    """Resolve a list of ASINs or Part Numbers to Master IDs (cached)."""
+    return _cached_resolve_to_master(
+        tuple(sorted(set(v.strip() for v in values if v.strip()))), id_type
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def _cached_get_brand_master_ids(brand_name, limit, regions_tuple, networks_tuple, inv_types_tuple):
     """Internal cached version of brand→master IDs lookup."""
     def safe(s): return s.strip().replace("'", "''")
@@ -950,23 +965,19 @@ def _cached_get_brand_master_ids(brand_name, limit, regions_tuple, networks_tupl
     regions = list(regions_tuple) if regions_tuple else None
     networks = list(networks_tuple) if networks_tuple else None
     inv_types = list(inv_types_tuple) if inv_types_tuple else None
-
     if regions and len(regions) > 0:
         rlist = ", ".join(f"'{safe(r)}'" for r in regions)
         region_clause = f"AND REGION IN ({rlist})"
     else:
         region_clause = ""
-
     network_clause = ""
     if networks and len(networks) > 0:
         nlist = ", ".join(f"'{safe(n)}'" for n in networks)
         network_clause = f"AND FULFILLMENT_NETWORK IN ({nlist})"
-
     inv_type_clause = ""
     if inv_types and len(inv_types) > 0:
         tlist = ", ".join(f"'{safe(t)}'" for t in inv_types)
         inv_type_clause = f"AND INVENTORY_TYPE IN ({tlist})"
-
     query = f"""
 SELECT DISTINCT MASTER_ID
 FROM PATTERN_DB.OPERATIONS.INVENTORY_HUB_NORMALIZED_INVENTORY_ITEMS
@@ -1103,7 +1114,6 @@ def find_missing_items(skus, df):
 with st.sidebar:
     st.markdown("## 📦 Product Catalogue Lookup")
     st.caption("Pattern — Merchandise Planning")
-
     # Usage tracker
     st.markdown(
         f'<div class="usage-badge">'
@@ -1114,14 +1124,12 @@ with st.sidebar:
     )
     if st.session_state["total_items_looked_up"] > 0:
         st.caption(f"📊 {st.session_state['total_items_looked_up']} total items looked up")
-
     st.markdown('<div class="sidebar-section"><h4>📖 About This Tool</h4><p>'
                 'A one-stop lookup tool for the Merchandise Planning team to quickly check '
                 'listing-level attributes across all marketplaces. Paste any identifier — SKU, '
                 'Listing ID, ASIN, MPN, Master ID, or FNSKU — and instantly retrieve DNO status, '
                 'shippable tags, fulfillment type, commingling details, pricing, and more. '
                 'Powered by live Snowflake queries, the data is always fresh and up to date.</p></div>', unsafe_allow_html=True)
-
     st.markdown('<div class="sidebar-section"><h4>📖 How to Use</h4><p>'
                 '1. Paste identifiers one per line, or upload a CSV/Excel file<br>'
                 '2. Click Lookup to query Snowflake<br>'
@@ -1129,7 +1137,6 @@ with st.sidebar:
                 '4. Use filters to narrow down results<br>'
                 '5. Toggle columns to customise your view<br>'
                 '6. Export to CSV when done</p></div>', unsafe_allow_html=True)
-
     st.markdown('<div class="sidebar-section"><h4>🔍 Supported Lookups</h4><p>'
                 '• SKU (Marketplace Primary ID)<br>'
                 '• Listing ID<br>'
@@ -1137,14 +1144,11 @@ with st.sidebar:
                 '• MPN<br>'
                 '• Master ID<br>'
                 '• FNSKU</p></div>', unsafe_allow_html=True)
-
     st.markdown('<div class="sidebar-section"><h4>ℹ️ Data Info</h4><p>'
                 '• DNO date: Latest available<br>'
                 '• Data source: Snowflake (live queries)<br>'
                 '• Max 500 items per lookup</p></div>', unsafe_allow_html=True)
-
     st.markdown("---")
-
     # Feedback section
     st.markdown("#### 💬 Feedback")
     feedback_type = st.selectbox("Type", ["Report an issue", "Suggest a feature", "General feedback"], key="fb_type", label_visibility="collapsed")
@@ -1155,11 +1159,9 @@ with st.sidebar:
             # In future, this could send to Slack or email
         else:
             st.warning("Please enter some feedback first.")
-
     st.markdown("---")
-    st.caption(f"v2.1 • {datetime.date.today().strftime('%B %Y')}")
+    st.caption(f"v2.2 • {datetime.date.today().strftime('%B %Y')}")
     st.caption("Built by Merchandise Planning Team")
-
 
 # ══════════════════════════════════════════════
 # Header
@@ -1223,11 +1225,9 @@ search_tab, fr_tab, inventory_tab = st.tabs(["🔍 Catalogue Lookup", "🔬 FR C
 
 with search_tab:
     st.markdown("")
-
     # ── Mode toggle: Search by ID  ·  Browse by Brand ──
     if "search_mode" not in st.session_state:
         st.session_state["search_mode"] = "ids"
-
     sm1, sm2, _ = st.columns([1, 1, 4])
     with sm1:
         if st.button("🔍 Search by ID",
@@ -1241,14 +1241,12 @@ with search_tab:
                      use_container_width=True, key="search_mode_brand"):
             st.session_state["search_mode"] = "brand"
             st.rerun()
-
     st.markdown("")
 
     if st.session_state["search_mode"] == "ids":
         # ══════════════ SEARCH BY ID ══════════════
         paste_col, upload_col = st.columns(2)
         skus_to_lookup = []
-
         with paste_col:
             st.markdown("#### ✏️ Paste Items")
             sku_text = st.text_area(
@@ -1258,7 +1256,6 @@ with search_tab:
             if sku_text.strip():
                 skus_to_lookup = [s.strip() for s in sku_text.strip().split("\n") if s.strip()]
             st.caption(f"{len(skus_to_lookup)} item(s) entered • Max 500")
-
         with upload_col:
             st.markdown("#### 📁 Upload File")
             uploaded_file = st.file_uploader("CSV or Excel", type=["csv", "xlsx", "xls"], label_visibility="collapsed")
@@ -1278,19 +1275,16 @@ with search_tab:
             if len(skus_to_lookup) > 500:
                 st.warning("⚠️ Max 500 items. Only first 500 processed.")
                 skus_to_lookup = skus_to_lookup[:500]
-
             if st.button("🔍 Lookup", type="primary", use_container_width=True):
                 progress_bar = st.progress(0, text="Connecting to Snowflake...")
                 time.sleep(0.3)
                 progress_bar.progress(15, text="Connected. Building query...")
                 time.sleep(0.2)
                 progress_bar.progress(30, text=f"Querying {len(skus_to_lookup)} item(s)...")
-
                 try:
                     df = run_lookup(skus_to_lookup)
                     progress_bar.progress(80, text="Processing results...")
                     time.sleep(0.2)
-
                     if df.empty:
                         progress_bar.progress(100, text="Done — no results found.")
                         st.warning("No results found for the provided items.")
@@ -1303,20 +1297,16 @@ with search_tab:
                         st.session_state["lookup_count"] += 1
                         st.session_state["total_items_looked_up"] += len(skus_to_lookup)
                         st.success(f"✅ Found **{len(df)}** results — see them below. 👇")
-
                     time.sleep(0.5)
                     progress_bar.empty()
                 except Exception as e:
                     progress_bar.empty()
                     st.error(f"Query failed: {e}")
-
     else:
         # ══════════════ BROWSE BY BRAND ══════════════
         st.markdown("#### 🏷️ Browse All Listings for a Brand")
         st.caption("Select a brand and region to fetch all their listings. Use the filters below to narrow down further.")
-
         bb1, bb2, bb3 = st.columns(3)
-
         with bb1:
             # Fetch vendor list (cached)
             try:
@@ -1325,10 +1315,8 @@ with search_tab:
                 vendor_list = []
             sel_brand = st.selectbox("Select Brand / Vendor", options=[""] + vendor_list,
                                       key="brand_select", placeholder="Start typing to search...")
-
         with bb2:
             brand_region = st.selectbox("Region", REGION_OPTIONS, key="brand_region")
-
         with bb3:
             result_limit = st.selectbox("Max Results", ["500", "1000", "2000", "5000", "No limit"],
                                          key="brand_limit")
@@ -1341,7 +1329,6 @@ with search_tab:
                 exclude_mapped = True            # fetch all, then keep only un-mapped marketplaces
             elif brand_region != "All":
                 region_mps = REGION_MAP.get(brand_region, [])
-
             # Determine limit
             limit_val = None if result_limit == "No limit" else int(result_limit)
 
@@ -1351,7 +1338,6 @@ with search_tab:
                 progress_bar.progress(20, text=f"Fetching listings for {sel_brand}...")
                 time.sleep(0.2)
                 progress_bar.progress(40, text="Querying across all marketplaces...")
-
                 try:
                     df = run_brand_lookup(sel_brand, region_mps, limit_val)
                     if exclude_mapped and not df.empty:
@@ -1359,7 +1345,6 @@ with search_tab:
                         df = df[~df["MARKETPLACE"].isin(mapped)]
                     progress_bar.progress(80, text="Processing results...")
                     time.sleep(0.2)
-
                     if df.empty:
                         progress_bar.progress(100, text="Done — no listings found.")
                         st.warning(f"No listings found for **{sel_brand}**" +
@@ -1374,7 +1359,6 @@ with search_tab:
                         st.session_state["total_items_looked_up"] += len(df)
                         region_label = f" in **{brand_region}**" if brand_region != "All" else ""
                         st.success(f"✅ Found **{len(df)}** listings for **{sel_brand}**{region_label} — see them below. 👇")
-
                     time.sleep(0.5)
                     progress_bar.empty()
                 except Exception as e:
@@ -1387,7 +1371,6 @@ with search_tab:
     # RESULTS (inline — render directly below the search controls)
     # ══════════════════════════════════════════════
     st.markdown("---")
-
     if "results_df" not in st.session_state or st.session_state.get("results_df", pd.DataFrame()).empty:
         st.info("👆 Run a search above (by ID or by brand) and your results will appear here.")
     else:
@@ -1415,7 +1398,6 @@ with search_tab:
         with mc4: st.markdown(f'<div class="metric-card mc-noship"><div class="label">Not Shippable</div><div class="value">{len(df) - shippable_count}</div></div>', unsafe_allow_html=True)
         with mc5: st.markdown(f'<div class="metric-card mc-fba"><div class="label">FBA</div><div class="value">{fba_count}</div></div>', unsafe_allow_html=True)
         with mc6: st.markdown(f'<div class="metric-card mc-active"><div class="label">Active</div><div class="value">{active_count}</div></div>', unsafe_allow_html=True)
-
         st.markdown("")
 
         # ── Filters ──
@@ -1425,7 +1407,6 @@ with search_tab:
         # Region filter row
         reg_col, mp_col, vn_col, dno_col = st.columns(4)
         filtered = df.copy()
-
         with reg_col:
             sel_region = st.selectbox("🌍 Region", REGION_OPTIONS, key="f_region")
             if sel_region == "Other":
@@ -1435,14 +1416,12 @@ with search_tab:
             elif sel_region != "All":
                 region_mps = REGION_MAP.get(sel_region, [])
                 filtered = filtered[filtered["MARKETPLACE"].isin(region_mps)]
-
         with mp_col:
             # Marketplace filter shows only marketplaces available after region filter
             mp_vals = sorted(filtered["MARKETPLACE"].dropna().unique().tolist())
             sel_mps = st.multiselect("Marketplace", options=mp_vals, default=[], key="f_mp", placeholder="All")
             if sel_mps:
                 filtered = filtered[filtered["MARKETPLACE"].isin(sel_mps)]
-
         with vn_col: filtered = multiselect_filter(filtered, "VENDOR", "Vendor", "f_vn")
         with dno_col: filtered = bool_multiselect_filter(filtered, "IS_DNO", "DNO", "f_dno")
 
@@ -1555,9 +1534,7 @@ with search_tab:
 
         # ── Export & Copy ──
         st.markdown("### 📤 Export & Copy")
-
         ex1, ex2, ex3, ex4 = st.columns(4)
-
         # CSV exports
         with ex1:
             st.download_button(
@@ -1573,7 +1550,6 @@ with search_tab:
                 f"catalogue_lookup_filtered_{datetime.date.today().isoformat()}.csv",
                 "text/csv", use_container_width=True,
             )
-
         # Excel exports
         with ex3:
             buffer_all = io.BytesIO()
@@ -1601,17 +1577,14 @@ with search_tab:
         with st.expander("📋 Copy to Clipboard — one click, includes headers"):
             copy_df = filtered[selected_cols].rename(columns=rename_map)
             tsv_text = copy_df.to_csv(index=False, sep="\t")
-
             # Escape for embedding in JS
             tsv_escaped = (
                 tsv_text.replace("\\", "\\\\")
                 .replace("`", "\\`")
                 .replace("$", "\\$")
             )
-
             row_count = len(copy_df)
             col_count = len(copy_df.columns)
-
             copy_html = f"""
             <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
                 <button id="copy-btn" onclick="copyToClipboard()" style="
@@ -1651,7 +1624,6 @@ with search_tab:
             """
             st.components.v1.html(copy_html, height=60)
             st.caption(f"Click the button above — it copies {row_count} rows with column headers, ready to paste into Excel or Google Sheets.")
-
             # Preview/fallback: show the text directly (no nested expander)
             st.markdown("**Manual copy fallback** (if the button doesn't work):")
             st.code(tsv_text, language=None)
@@ -1680,7 +1652,6 @@ with fr_tab:
         seen = set()
         fr_ids = [x for x in fr_ids if not (x in seen or seen.add(x))]
     st.caption(f"**{len(fr_ids)}** identifier(s) entered • Max 500")
-
     st.markdown("")
 
     # ── ATTRIBUTE PRESETS ──
@@ -1739,18 +1710,15 @@ with fr_tab:
         if len(fr_ids) > 500:
             st.warning("⚠️ Max 500 identifiers. Only the first 500 will be processed.")
             fr_ids = fr_ids[:500]
-
         if st.button(f"▶ Run FR Check on {len(fr_ids)} listing(s)", type="primary", use_container_width=True, key="fr_run"):
             progress_bar = st.progress(0, text="Connecting to Snowflake...")
             time.sleep(0.2)
             progress_bar.progress(20, text=f"Fetching catalogue data for {len(fr_ids)} listing(s)...")
-
             try:
                 id_type = "SKU" if fr_id_type == "SKU" else "LISTING_ID"
                 fr_df = run_fr_lookup(fr_ids, id_type)
                 progress_bar.progress(60, text="Running validation rules...")
                 time.sleep(0.2)
-
                 if fr_df.empty:
                     progress_bar.progress(100, text="No results found.")
                     st.warning(f"No catalogue data found for the given {fr_id_type}s.")
@@ -1763,7 +1731,6 @@ with fr_tab:
                     st.session_state["fr_input_ids"] = fr_ids
                     passed = sum(1 for r in fr_results if r["passed"])
                     st.success(f"✅ Done — {passed} passed, {len(fr_results) - passed} flagged.")
-
                 time.sleep(0.3)
                 progress_bar.empty()
             except Exception as e:
@@ -1781,7 +1748,6 @@ with fr_tab:
         results = st.session_state["fr_results"]
         attrs_at_run = st.session_state.get("fr_selected_attrs_at_run", [])
         input_ids = st.session_state.get("fr_input_ids", [])
-
         attr_id_to_label = {a["id"]: a["label"] for a in FR_ATTRIBUTES}
         attr_id_to_type = {a["id"]: a["type"] for a in FR_ATTRIBUTES}
 
@@ -1807,7 +1773,6 @@ with fr_tab:
             st.markdown(f'<div class="fr-summary-tile flagged"><div class="lbl">Flagged</div><div class="val">{flagged}</div></div>', unsafe_allow_html=True)
         with s4:
             st.markdown(f'<div class="fr-summary-tile missing"><div class="lbl">Not Found</div><div class="val">{len(missing_ids)}</div></div>', unsafe_allow_html=True)
-
         st.markdown("")
 
         # Missing items
@@ -1819,7 +1784,6 @@ with fr_tab:
         # Filter — Pass/Flagged
         fr_filter = st.radio("Show", [f"All ({total})", f"✅ Passed ({passed})", f"⛔ Flagged ({flagged})"],
                              key="fr_filter", horizontal=True, label_visibility="collapsed")
-
         if "Passed" in fr_filter:
             shown = [r for r in results if r["passed"]]
         elif "Flagged" in fr_filter:
@@ -1829,7 +1793,6 @@ with fr_tab:
 
         # ── Additional filters: Brand / Marketplace / Country / Attribute ──
         st.markdown("")
-
         # Build option lists from current results
         brand_opts = sorted(set(r["vendor"] for r in results if r["vendor"]))
         marketplace_opts = sorted(set(r["marketplace"] for r in results if r["marketplace"]))
@@ -1891,7 +1854,6 @@ with fr_tab:
                     value = det.get("value", "") or "—"
                     row_data[attr_label] = f"{icon} {value}"
                 display_rows.append(row_data)
-
             display_fr_df = pd.DataFrame(display_rows)
 
             def fr_color_rows(row):
@@ -1915,18 +1877,15 @@ with fr_tab:
         st.markdown("")
         st.markdown("##### 🔍 Drill Down")
         st.caption("Pick a listing below to see the full attribute breakdown with status, value, and notes.")
-
         if shown:
             drill_options = ["— Select a listing —"] + [
                 f"{r['listing_id']} • {r['sku'] or '—'} • {str(r['product_name'])[:50] if r['product_name'] else 'No name'}"
                 for r in shown
             ]
             drill_choice = st.selectbox("Listing", drill_options, key="fr_drill", label_visibility="collapsed")
-
             if drill_choice and drill_choice != "— Select a listing —":
                 drill_idx = drill_options.index(drill_choice) - 1
                 drill = shown[drill_idx]
-
                 # Header bar with summary
                 status_color = "rgba(34,197,94,0.15)" if drill["passed"] else "rgba(239,68,68,0.15)"
                 status_text = "✅ PASSED — All checks succeeded" if drill["passed"] else f"⛔ FLAGGED — {drill['red_count']} issue(s) need attention"
@@ -1941,7 +1900,6 @@ with fr_tab:
                     f'</div>',
                     unsafe_allow_html=True
                 )
-
                 # Build detail table — split into two columns: checks first, then info
                 check_rows = []
                 info_rows = []
@@ -2059,7 +2017,7 @@ with fr_tab:
 with inventory_tab:
     st.markdown("")
     st.markdown("### 📦 Inventory Lookup")
-    st.caption("Stock levels across **all regions** (GB, EU, US, CA, AU, AE, CN, …) from the Inventory Hub, joined with live central-warehouse stock. Search by Master ID, Listing ID, ASIN, or Brand.")
+    st.caption("Stock levels across **all regions** (GB, EU, US, CA, AU, AE, CN, …) from the Inventory Hub, joined with live central-warehouse stock. Search by Master ID, ASIN, or Part Number — or Browse by Brand.")
     st.caption("ℹ️ Hub metrics (Fulfillable, Inbound, On Order, etc.) cover every region. The warehouse columns — **CW Inventory, Pickable, PFS Reserved, Storage ID(s), Warehouse Status, Warehouse** — populate for any region with a Pattern central warehouse (GB→Northampton, EU→Wroclaw, US→Hebron/Las Vegas/Lindon/…, CA→Milton, AE→Dubai, AU→Melbourne, CN→Hong Kong). Regions without a mapped warehouse show blanks there.")
     st.markdown("")
 
@@ -2078,7 +2036,6 @@ with inventory_tab:
                      use_container_width=True, key="inv_mode_brand"):
             st.session_state["inv_mode"] = "brand"
             st.rerun()
-
     st.markdown("")
 
     # ── UPSTREAM FILTERS (apply to Snowflake query — reduce data volume) ──
@@ -2092,7 +2049,7 @@ with inventory_tab:
                 default=[],
                 key="inv_uf_region",
                 placeholder="All regions (no filter)",
-                help="Leave empty for all regions. Pick one or more to restrict. GB / EU are the only regions backed by Pattern's Northampton / Wroclaw warehouses today, so the warehouse-only columns (CW Inventory, Pickable, etc.) populate for those two.",
+                help="Leave empty for all regions. Pick one or more to restrict. GB / EU / US / CA / AE / AU / CN are the regions backed by Pattern central warehouses, so the warehouse-only columns (CW Inventory, Pickable, etc.) populate for those.",
             )
         with uf_c2:
             inv_uf_network = st.multiselect(
@@ -2124,12 +2081,23 @@ with inventory_tab:
     uf_inv_types = inv_uf_inv_type if inv_uf_inv_type else None
 
     if st.session_state["inv_mode"] == "ids":
-        # ── ID-BASED INPUT ──
-        st.markdown("**Paste identifiers** — Master IDs, Listing IDs, ASINs, SKUs or FNSKUs "
-                    "(anything that isn't already a Master ID is auto-resolved to one)")
+        # ── ID-BASED INPUT (Master ID · ASIN · Part Number) ──
+        inv_id_type = st.radio(
+            "Search by", ["Master ID", "ASIN", "Part Number"],
+            horizontal=True, key="inv_id_type",
+        )
+        _ph = {
+            "Master ID": "One per line, or comma/space separated\ne.g.\nP0M3SJXI\nP0NEIWB5",
+            "ASIN": "One per line, or comma/space separated\ne.g.\nB07PGL4G2R\nB0BXT6YCHK",
+            "Part Number": "One per line, or comma/space separated\ne.g.\nUK-BOSCH-786700\n0601072P00",
+        }[inv_id_type]
+        if inv_id_type == "Master ID":
+            st.markdown("**Paste Master IDs** — one per line, or comma/space separated")
+        else:
+            st.markdown(f"**Paste {inv_id_type}s** — one per line, or comma/space separated "
+                        f"(each {inv_id_type} is resolved to its Master ID)")
         inv_text = st.text_area(
-            "IDs",
-            placeholder="One per line, or comma/space separated\ne.g.\nP0M3SJXI   (Master ID)\nL0NC2POW   (Listing ID)\nB07PGL4G2R (ASIN)",
+            "IDs", placeholder=_ph,
             height=140, key="inv_text", label_visibility="collapsed",
         )
 
@@ -2140,48 +2108,38 @@ with inventory_tab:
             raw_ids = [s.strip() for s in re.split(r"[\n,\s\t]+", inv_text.strip()) if s.strip()]
             seen = set()
             raw_ids = [x for x in raw_ids if not (x in seen or seen.add(x))]
-        st.caption(f"**{len(raw_ids)}** identifier(s) entered • Max 500")
-
+        st.caption(f"**{len(raw_ids)}** {inv_id_type}(s) entered • Max 500")
         if raw_ids and len(raw_ids) > 500:
             st.warning("⚠️ Max 500 identifiers. Only first 500 will be processed.")
             raw_ids = raw_ids[:500]
-
         st.markdown("")
+
         if raw_ids:
-            if st.button(f"▶ Look Up Inventory for {len(raw_ids)} identifier(s)",
+            if st.button(f"▶ Look Up Inventory for {len(raw_ids)} {inv_id_type}(s)",
                          type="primary", use_container_width=True, key="inv_run_ids"):
                 inv_run_triggered = True
                 progress_bar = st.progress(0, text="🔌 Connecting to Snowflake...")
-
                 try:
-                    # Step 1: Master IDs (start with P0) are used as-is; everything else
-                    # (Listing IDs, ASINs, SKUs, FNSKUs) is resolved to a Master ID.
-                    likely_master = [r for r in raw_ids if r.upper().startswith("P0")]
-                    likely_listing = [r for r in raw_ids if r.upper().startswith("L0")]
-                    other = [r for r in raw_ids if not r.upper().startswith("P0") and not r.upper().startswith("L0")]
-
-                    # Everything that isn't a Master ID gets resolved (ASINs land here too)
-                    listing_candidates = likely_listing + other
-
-                    resolved_masters = list(likely_master)
                     resolution_map = {}
-
-                    if listing_candidates:
-                        progress_bar.progress(15, text=f"🔗 Resolving {len(listing_candidates)} identifier(s) (Listing IDs / ASINs / SKUs) → Master IDs...")
+                    if inv_id_type == "Master ID":
+                        # Used as-is — no resolution needed
+                        resolved_masters = list({r for r in raw_ids if r})
+                    else:
+                        id_key = "ASIN" if inv_id_type == "ASIN" else "PART_NUMBER"
+                        progress_bar.progress(15, text=f"🔗 Resolving {len(raw_ids)} {inv_id_type}(s) → Master IDs...")
                         try:
-                            resolution_map = resolve_listing_to_master(listing_candidates)
-                            resolved_masters.extend(resolution_map.values())
+                            res = resolve_to_master(raw_ids, id_key)
+                            resolved_masters = res["masters"]
+                            resolution_map = {"matched": res["matched_keys"]}
                         except Exception as e:
-                            st.warning(f"ID resolution had an issue: {e}. Continuing with Master IDs only.")
-
-                    # Dedupe
-                    resolved_masters = list({m for m in resolved_masters if m})
+                            st.warning(f"{inv_id_type} resolution had an issue: {e}.")
+                            resolved_masters = []
 
                     if not resolved_masters:
                         progress_bar.empty()
-                        st.error("No Master IDs could be resolved from your input. Please check the identifiers.")
+                        st.error(f"No Master IDs could be resolved from your {inv_id_type}(s). Please check the values.")
                     else:
-                        progress_bar.progress(35, text=f"📦 Pulling warehouse stock (Northampton + Wroclaw)...")
+                        progress_bar.progress(35, text="📦 Pulling central-warehouse stock...")
                         time.sleep(0.1)  # let UI breathe
                         progress_bar.progress(55, text=f"🔄 Joining with Inventory Hub for {len(resolved_masters)} Master ID(s)...")
                         inv_df = run_inventory_lookup(resolved_masters,
@@ -2191,7 +2149,6 @@ with inventory_tab:
                         progress_bar.progress(100, text=f"✅ Done — {len(inv_df)} row(s) found!")
                         time.sleep(0.3)
                         progress_bar.empty()
-
                         if inv_df.empty:
                             st.warning("No inventory data found for the given IDs.")
                             st.session_state.pop("inv_df", None)
@@ -2200,14 +2157,13 @@ with inventory_tab:
                             st.session_state["inv_input_master_ids"] = resolved_masters
                             st.session_state["inv_resolution_map"] = resolution_map
                             st.success(f"✅ Found **{len(inv_df)}** inventory row(s) across **{inv_df['MASTER_ID'].nunique()}** Master ID(s).")
-                            if resolution_map:
-                                st.info(f"🔗 Resolved {len(resolution_map)} identifier(s) (Listing IDs / ASINs / SKUs / FNSKUs) → Master IDs.")
+                            if inv_id_type != "Master ID" and resolution_map.get("matched"):
+                                st.info(f"🔗 Resolved {len(resolution_map['matched'])} {inv_id_type}(s) → {len(resolved_masters)} Master ID(s).")
                 except Exception as e:
                     progress_bar.empty()
                     st.error(f"Inventory lookup failed: {e}")
         else:
-            st.info("👆 Paste at least one Master ID, Listing ID or ASIN to begin.")
-
+            st.info(f"👆 Paste at least one {inv_id_type} to begin.")
     else:
         # ── BRAND-BASED INPUT ──
         st.markdown("**Enter brand name** — case-insensitive, exact match")
@@ -2218,26 +2174,23 @@ with inventory_tab:
         with b_col2:
             inv_brand_limit = st.selectbox("Max Results", [500, 1000, 2000, 5000, "No limit"],
                                             index=0, key="inv_brand_limit", label_visibility="collapsed")
-
         st.markdown("")
         if inv_brand.strip():
             if st.button(f"🏷️ Fetch Inventory for '{inv_brand.strip()}'",
                          type="primary", use_container_width=True, key="inv_run_brand"):
                 inv_run_triggered = True
                 progress_bar = st.progress(0, text="🔌 Connecting to Snowflake...")
-
                 try:
                     progress_bar.progress(15, text=f"🔍 Finding Master IDs for brand '{inv_brand.strip()}'...")
                     limit = None if inv_brand_limit == "No limit" else int(inv_brand_limit)
                     brand_masters = get_brand_master_ids(inv_brand.strip(), limit=limit,
                                                           regions=uf_regions, networks=uf_networks, inv_types=uf_inv_types)
-
                     if not brand_masters:
                         progress_bar.empty()
                         st.warning(f"No Master IDs found for brand '{inv_brand.strip()}' with the current pre-fetch filters. Try widening the filters.")
                         st.session_state.pop("inv_df", None)
                     else:
-                        progress_bar.progress(35, text=f"📦 Pulling warehouse stock (Northampton + Wroclaw) for {len(brand_masters)} Master IDs...")
+                        progress_bar.progress(35, text=f"📦 Pulling central-warehouse stock for {len(brand_masters)} Master IDs...")
                         time.sleep(0.1)
                         progress_bar.progress(55, text=f"🔄 Joining with Inventory Hub data...")
                         inv_df = run_inventory_lookup(brand_masters,
@@ -2247,9 +2200,8 @@ with inventory_tab:
                         progress_bar.progress(100, text=f"✅ Done — {len(inv_df)} row(s) found!")
                         time.sleep(0.3)
                         progress_bar.empty()
-
                         if inv_df.empty:
-                            st.warning(f"No inventory rows found for '{inv_brand.strip()}' in the configured pools (Pattern PFS / Amazon FBA in GB/EU).")
+                            st.warning(f"No inventory rows found for '{inv_brand.strip()}' in the configured pools.")
                             st.session_state.pop("inv_df", None)
                         else:
                             st.session_state["inv_df"] = inv_df
@@ -2290,25 +2242,19 @@ with inventory_tab:
         # Note: For ACTUAL_AVAILABLE, STOW_PICKABLE, and Pattern WH Reserved (Mkt) — only PFS applies; FBA shows "—"
         sum_fulfillable_pfs = split_sum(inv_df_full, "FULFILLABLE", network_filter="Pattern PFS")
         sum_fulfillable_fba = split_sum(inv_df_full, "FULFILLABLE", network_filter="Amazon FBA")
-
         sum_unfulfillable_pfs = split_sum(inv_df_full, "UNFULFILLABLE", network_filter="Pattern PFS")
         sum_unfulfillable_fba = split_sum(inv_df_full, "UNFULFILLABLE", network_filter="Amazon FBA")
-
         # Actual Available — only PFS (dedupe by master to avoid double-counting per pool)
         actual_avail_pfs_df = inv_df_full[inv_df_full["FULFILLMENT_NETWORK"] == "Pattern PFS"].drop_duplicates(["MASTER_ID", "REGION"])
         sum_actual_pfs = int(actual_avail_pfs_df["ACTUAL_AVAILABLE_QTY"].fillna(0).sum()) if "ACTUAL_AVAILABLE_QTY" in actual_avail_pfs_df.columns else 0
-
         # Pattern WH Reserved (Mkt) — only PFS
         sum_pwhr_pfs = split_sum(inv_df_full, "PATTERN_WAREHOUSE_RESERVED_FOR_MARKETPLACE", network_filter="Pattern PFS")
-
         # Fulfillment Channel Units
         sum_fc_pfs = split_sum(inv_df_full, "FULFILLMENT_CHANNEL_UNITS", network_filter="Pattern PFS")
         sum_fc_fba = split_sum(inv_df_full, "FULFILLMENT_CHANNEL_UNITS", network_filter="Amazon FBA")
-
         # Inbound
         sum_inb_pfs = split_sum(inv_df_full, "INBOUND", network_filter="Pattern PFS")
         sum_inb_fba = split_sum(inv_df_full, "INBOUND", network_filter="Amazon FBA")
-
         # On Order
         sum_oo_pfs = split_sum(inv_df_full, "ON_ORDER", network_filter="Pattern PFS")
         sum_oo_fba = split_sum(inv_df_full, "ON_ORDER", network_filter="Amazon FBA")
@@ -2351,7 +2297,6 @@ with inventory_tab:
             st.markdown(render_card_dual("Inbound", sum_inb_pfs, sum_inb_fba), unsafe_allow_html=True)
         with r2c4:
             st.markdown(render_card_dual("On Order", sum_oo_pfs, sum_oo_fba), unsafe_allow_html=True)
-
         st.markdown("")
 
         # ── FILTERS ──
@@ -2372,7 +2317,6 @@ with inventory_tab:
                 inv_f_brand = st.multiselect("Brand",
                                              sorted(inv_df_full["BRAND"].dropna().astype(str).unique().tolist()),
                                              key="inv_f_brand", placeholder="All brands")
-
             f5, f6, f7, f8 = st.columns(4)
             with f5:
                 inv_f_vendor = st.multiselect("Vendor",
@@ -2396,7 +2340,6 @@ with inventory_tab:
                                                    key="inv_f_bundle", placeholder="All")
                 else:
                     inv_f_bundle = []
-
             # Text search across all string cols
             inv_search = st.text_input("🔍 Quick search (matches any column)", key="inv_search", placeholder="Type to filter...")
 
@@ -2428,7 +2371,6 @@ with inventory_tab:
                 "Financial": [c["key"] for c in INVENTORY_COLUMNS if c["group"] in ("Identifiers", "Categorization", "Core", "USD")],
                 "All":       [c["key"] for c in INVENTORY_COLUMNS],
             }
-
             chosen_preset = st.radio(
                 "Quick view",
                 list(COL_PRESETS.keys()) + ["Custom"],
@@ -2436,7 +2378,6 @@ with inventory_tab:
                 horizontal=True,
                 key="inv_preset",
             )
-
             if chosen_preset == "Custom":
                 # One searchable multiselect, grouped labels — only shown when fine-tuning
                 label_to_key = {f"{c['group']} · {c['label']}": c["key"] for c in INVENTORY_COLUMNS}
@@ -2452,7 +2393,6 @@ with inventory_tab:
                 visible = [label_to_key[lbl] for lbl in chosen_labels]
             else:
                 visible = COL_PRESETS[chosen_preset]
-
             # Store in INVENTORY_COLUMNS order so table column order stays consistent
             visible_set = set(visible)
             st.session_state["inv_visible_cols"] = [c["key"] for c in INVENTORY_COLUMNS if c["key"] in visible_set]
@@ -2461,10 +2401,10 @@ with inventory_tab:
                 "Pick **Custom** to fine-tune, and drag column headers in the table to reorder."
             )
 
-        # ── DISPLAY: TABLE VIEW or CARD VIEW ──
+        # ── DISPLAY: TABLE VIEW ──
         visible_keys = [k for k in st.session_state["inv_visible_cols"] if k in inv_filtered.columns]
         if not visible_keys:
-            st.warning("No columns selected. Pick at least one in '⚙️ Customize Columns'.")
+            st.warning("No columns selected. Pick at least one in '⚙️ Columns'.")
         else:
             # Rename columns to friendly labels for display
             label_map = {c["key"]: c["label"] for c in INVENTORY_COLUMNS}
@@ -2532,13 +2472,11 @@ with inventory_tab:
         st.markdown("")
         with st.expander("📋 Quick Copy — copy a full column of values", expanded=False):
             st.caption("Pick a column from the filtered results, then click Copy to download all its unique values as a list (one per line).")
-
             # Build list of available columns from the actual data + use friendly labels
             label_map_all = {c["key"]: c["label"] for c in INVENTORY_COLUMNS}
             available_for_copy = [k for k in inv_filtered.columns if k in label_map_all]
             label_to_key_copy = {label_map_all[k]: k for k in available_for_copy}
             copy_labels = [label_map_all[k] for k in available_for_copy]
-
             if not copy_labels:
                 st.info("No data available to copy.")
             else:
@@ -2567,7 +2505,6 @@ with inventory_tab:
                         use_container_width=True,
                         key="inv_qc_download",
                     )
-
                 # Show a preview of the values
                 if unique_vals:
                     preview = "\n".join(str(v) for v in unique_vals[:10])
@@ -2615,4 +2552,3 @@ with inventory_tab:
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True, key="inv_dl_filt_xlsx",
             )
-
