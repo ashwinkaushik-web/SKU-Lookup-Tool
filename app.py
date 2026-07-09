@@ -238,11 +238,16 @@ q2 AS (
         pc.MAP_W_CURRENCY AS map_price, pc.RETAIL_W_CURRENCY AS retail_price,
         pc.MSRP_W_CURRENCY AS msrp_price
     FROM PATTERN_DB.PUBLIC.PRODUCT_CATALOG_PRODUCTS_AND_LISTINGS_VIEW pc
-    -- PUSHED-DOWN FILTER: only fetch catalog rows that match the user's input on any identifier
+    -- PUSHED-DOWN FILTER: fetch catalog rows matching the user's input directly, OR any
+    -- listing q1 already resolved. Without the last clause, searching by Master ID / MPN /
+    -- ASIN / FNSKU returned blank Shippable / Active / Product Name / prices, because q2
+    -- only matches SKU / Listing ID / UPC / EAN. q1 resolves ALL identifier types to
+    -- listing_ids, so this makes q2 pull its columns for exactly those listings.
     WHERE UPPER(pc.MARKETPLACE_PRIMARY_ID) IN ({upper_list})
        OR UPPER(pc.LISTING_ID) IN ({upper_list})
        OR UPPER(pc.UPC) IN ({upper_list})
        OR UPPER(pc.EAN) IN ({upper_list})
+       OR pc.LISTING_ID IN (SELECT listing_id FROM q1 WHERE listing_id IS NOT NULL)
 ),
 q3 AS (
     -- Restrict to only listings that appeared in q1 or q2 (small set), and only latest date
