@@ -1,9 +1,8 @@
-# Pinned below the bleeding edge — Streamlit Cloud re-resolves on each deploy.
-# pandas 3.x / numpy 2.5 / pyarrow 25 segfault during Arrow dataframe rendering.
-streamlit>=1.40,<1.60
-snowflake-connector-python>=3.12
-pandas>=2.2,<3
-numpy>=1.26,<2.3
-pyarrow>=16,<20
-cryptography>=42
-openpyxl>=3.1
+streamlit==1.44.0
+snowflake-connector-python[pandas]==3.12.3
+pandas==2.2.3
+numpy==1.26.4
+pyarrow==16.1.0
+openpyxl==3.1.5
+cryptography==44.0.3
+pyOpenSSL==24.3.0
