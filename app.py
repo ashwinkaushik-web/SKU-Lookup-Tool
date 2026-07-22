@@ -8,6 +8,7 @@ import snowflake.connector
 import datetime
 import time
 import io
+import re
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 
@@ -434,17 +435,31 @@ FR_ATTRIBUTES = [
     {"id": "LISTING_PREP_PLAN_ID", "label": "Listing Prep Plan ID", "type": "check"},
     {"id": "ITEM_PREP_PLAN_ID", "label": "Item Prep Plan ID", "type": "check"},
     {"id": "CAN_EXPIRE", "label": "Can Expire", "type": "check"},
-    {"id": "IS_GLASS", "label": "Is Glass", "type": "check"},
-    {"id": "CATALOG_DNO_STATUS", "label": "DNO Status", "type": "check"},
+    {"id": "LISTING_IS_EXPIRABLE", "label": "Listing Is Expirable", "type": "check"},
+    {"id": "IS_GLASS", "label": "Is Glass", "type": "info"},
+    {"id": "ENROLLED_IN_TRANSPARENCY_PROGRAM", "label": "Enrolled In Transparency", "type": "check"},
+    {"id": "ITEM_REQUIRES_TRANSPARENCY_LABEL", "label": "Requires Transparency Label", "type": "info"},
+    {"id": "IS_BUNDLE", "label": "Is Bundle", "type": "info"},
+    {"id": "IS_SOLD_INDIVIDUALLY", "label": "Is Sold Individually", "type": "info"},
+    {"id": "LISTING_OPT_OUT_OF_AUTOMATED_WOI_CREATION", "label": "Opt Out of Auto WOI Creation", "type": "info"},
+    {"id": "CATALOG_DNO_STATUS", "label": "DNO Status", "type": "info"},
     {"id": "IS_TEMPORARY", "label": "Is Temporary", "type": "info"},
     {"id": "MARKETPLACE_SECONDARY_ID_TYPE", "label": "Secondary ID Type", "type": "info"},
 ]
 
-# Quick Check preset = the most important checks (no info-only)
+# Columns not (yet) available live in Snowflake — pulled as blank so the attribute
+# still displays; dependent rules degrade gracefully (never false-fail on blanks).
+FR_UNAVAILABLE_COLS = [
+    "ENROLLED_IN_TRANSPARENCY_PROGRAM",
+    "ITEM_REQUIRES_TRANSPARENCY_LABEL",
+    "IS_SOLD_INDIVIDUALLY",
+]
+
+# Quick Check preset = the check-type attributes only (no info-only)
 QUICK_CHECK_ATTRS = [
     "LISTING_IS_COMMINGLED", "IS_ACTIVE", "LISTING_IS_SHIPABLE",
     "LISTING_PREP_PLAN_ID", "ITEM_PREP_PLAN_ID", "CAN_EXPIRE",
-    "IS_GLASS", "CATALOG_DNO_STATUS",
+    "LISTING_IS_EXPIRABLE", "ENROLLED_IN_TRANSPARENCY_PROGRAM",
 ]
 
 
@@ -468,19 +483,26 @@ SELECT
     pc.MARKETPLACE_COUNTRY_CODE,
     pc.VENDOR_NAME AS VENDOR,
     pc.PRODUCT_NAME,
+    pc.MPN,
     pc.IS_ACTIVE,
     pc.IS_DISCONTINUED,
     pc.LISTING_IS_SHIPABLE,
     pc.CAN_EXPIRE,
     pc.IS_HAZMAT,
     pc.IS_GLASS,
+    pc.IS_BUNDLE,
     pc.LISTING_PREP_PLAN_ID,
     pc.PRODUCT_DIMENSIONS,
     pc.CASEPACK_DIMENSIONS,
     pcl.LISTING_IS_COMMINGLED,
     dno.CATALOG_DNO_STATUS,
     dno.IS_TEMPORARY,
-    li.ITEM_PREP_PLAN_ID
+    li.ITEM_PREP_PLAN_ID,
+    inm.LISTING_IS_OPT_OUT_OF_AUTO_WOI_CREATION AS LISTING_OPT_OUT_OF_AUTOMATED_WOI_CREATION,
+    pc.CAN_EXPIRE AS LISTING_IS_EXPIRABLE,
+    CAST(NULL AS VARCHAR) AS ENROLLED_IN_TRANSPARENCY_PROGRAM,
+    CAST(NULL AS VARCHAR) AS ITEM_REQUIRES_TRANSPARENCY_LABEL,
+    CAST(NULL AS VARCHAR) AS IS_SOLD_INDIVIDUALLY
 FROM PATTERN_DB.PUBLIC.PRODUCT_CATALOG_PRODUCTS_AND_LISTINGS_VIEW pc
 LEFT JOIN PATTERN_DB.PUBLIC.PRODUCT_CATALOG_PRODUCTS_AND_LISTINGS_VIEW_LITE pcl
     ON pc.LISTING_ID = pcl.LISTING_ID
@@ -488,6 +510,8 @@ LEFT JOIN PATTERN_DB.PUBLIC.PRODUCT_CATALOG_CURRENT_DNO_STATUS dno
     ON pc.LISTING_ID = dno.LISTING_ID
 LEFT JOIN ANALYTICS_DB.STG_CATALOG.STG_CATALOG__LISTINGS li
     ON pc.LISTING_ID = li.LISTING_ID
+LEFT JOIN PATTERN_DB.OPERATIONS.ITEMS_NORMALIZED inm
+    ON pc.LISTING_ID = inm.LISTING_ID
 {where_clause}
 """
 
@@ -521,101 +545,259 @@ def _is_blank(v):
     return _lo(v) == ""
 
 
-def _linked_check(row):
-    """Commingled + Glass + Prep Plan linked rule.
-    Returns dict with ok (bool) and why (str).
-    """
-    cm = _is_y(row.get("LISTING_IS_COMMINGLED", ""))
-    sid = str(row.get("MARKETPLACE_SECONDARY_ID", "") or "").strip()
-    b0 = sid.startswith("B0")
-    gl = _is_y(row.get("IS_GLASS", ""))
-    lp = str(row.get("LISTING_PREP_PLAN_ID", "") or "").strip()
-    ip = str(row.get("ITEM_PREP_PLAN_ID", "") or "").strip()
+def _g(row, key):
+    """Read a row value as a trimmed string, treating None/NaN as blank."""
+    v = row.get(key, "")
+    if v is None:
+        return ""
+    if isinstance(v, float) and pd.isna(v):
+        return ""
+    s = str(v).strip()
+    return "" if s.lower() == "nan" else s
 
-    def has_plan(v):
-        return v and v != "0" and _lo(v) not in ("false", "no", "none")
 
-    has_any_plan = has_plan(lp) or has_plan(ip)
-    # Bypass: Commingled + B0 + Glass=N -> auto-pass
-    if cm and b0 and not gl:
-        return {"ok": True, "why": "Comm+B0+NoGlass — bypass"}
-    if has_any_plan:
-        return {"ok": True, "why": "Prep plan filled"}
-    return {"ok": False, "why": "Prep plan required"}
+def _sku(row):
+    """SKU is aliased as SKU in the query; fall back to MARKETPLACE_PRIMARY_ID."""
+    return _g(row, "SKU") or _g(row, "MARKETPLACE_PRIMARY_ID")
+
+
+def _plan_filled(v):
+    return bool(v) and v != "0" and v.lower() not in ("false", "no")
+
+
+def _R(status, text, value):
+    return {"status": status, "text": text, "value": value}
+
+
+# ── Info-only attributes (display the value, never pass/fail) ──
+_FR_INFO_ATTRS = {
+    "MARKETPLACE_COUNTRY_CODE", "PRODUCT_DIMENSIONS", "CASEPACK_DIMENSIONS",
+    "IS_HAZMAT", "IS_GLASS", "ITEM_REQUIRES_TRANSPARENCY_LABEL", "IS_BUNDLE",
+    "IS_SOLD_INDIVIDUALLY", "LISTING_OPT_OUT_OF_AUTOMATED_WOI_CREATION",
+    "CATALOG_DNO_STATUS", "IS_TEMPORARY", "MARKETPLACE_SECONDARY_ID_TYPE",
+}
 
 
 def evaluate_attribute(attr_id, row):
-    """Evaluate one attribute for one row.
-    Returns dict: {status: 'g'/'r'/'i'/'n', text: str, value: str}
+    """Evaluate one attribute for one row — ported 1:1 from the FR-Checker tool's ev().
+    Returns {status: 'g'/'r'/'i'/'n', text: str, value: str}
     g = green/pass, r = red/fail, i = info, n = not applicable
     """
-    v = str(row.get(attr_id, "") or "").strip()
-    vl = _lo(v)
-    sid = str(row.get("MARKETPLACE_SECONDARY_ID", "") or "").strip()
+    v = _g(row, attr_id)
+    sid = _g(row, "MARKETPLACE_SECONDARY_ID")
+
+    if attr_id in _FR_INFO_ATTRS:
+        return _R("i", v or "—", v)
 
     if attr_id == "LISTING_IS_COMMINGLED":
-        lc = _linked_check(row)
-        pfx = sid[:2] if sid else "—"
-        if lc["ok"]:
-            return {"status": "g", "text": f"Commingled={v or '—'} / {pfx} ✓ ({lc['why']})", "value": v}
-        return {"status": "r", "text": f"Commingled={v or '—'} / {pfx} — {lc['why']}", "value": v}
+        b0 = sid.startswith("B0")
+        x0 = sid.startswith("X0")
+        cm = _is_y(v)
+        glC = _is_y(_g(row, "IS_GLASS"))
+        enrC = _is_y(_g(row, "ENROLLED_IN_TRANSPARENCY_PROGRAM"))
+        buC = _is_y(_g(row, "IS_BUNDLE"))
+        planC = _plan_filled(_g(row, "LISTING_PREP_PLAN_ID"))
+        if b0 and cm:
+            return _R("g", "Commingled + B0 ✓", v)
+        if b0 and not cm and enrC and planC:
+            return _R("g", "Not Commingled + B0 + Enrolled + Listing Plan ✓ (transparency bypass)", v)
+        if b0 and not cm and glC:
+            return _R("g", "Not Commingled + B0 + Glass=Y ✓ (glass override)", v)
+        if b0 and not cm and buC:
+            return _R("g", "Not Commingled + B0 + Bundle=Y ✓ (bundle override)", v)
+        if b0 and not cm:
+            return _R("r", "Not Commingled but B0", v)
+        if x0 and cm:
+            return _R("r", "Commingled but X0", v)
+        if x0 and not cm:
+            return _R("g", "Not Commingled + X0 ✓", v)
+        return _R("n", "Prefix: " + (sid[:2] if sid else "—"), v)
 
     if attr_id == "IS_ACTIVE":
-        if _is_y(v):
-            return {"status": "g", "text": "Active ✓", "value": v}
-        return {"status": "r", "text": "Inactive / blank", "value": v}
-
-    if attr_id == "MARKETPLACE_COUNTRY_CODE":
-        return {"status": "i", "text": v or "—", "value": v}
-
-    if attr_id == "PRODUCT_DIMENSIONS":
-        return {"status": "i", "text": v or "—", "value": v}
-
-    if attr_id == "CASEPACK_DIMENSIONS":
-        return {"status": "i", "text": v or "—", "value": v}
-
-    if attr_id == "IS_HAZMAT":
-        return {"status": "i", "text": v or "—", "value": v}
+        return _R("g", "Active ✓", v) if _is_y(v) else _R("r", "Inactive / blank", v)
 
     if attr_id == "LISTING_IS_SHIPABLE":
-        if _is_y(v):
-            return {"status": "g", "text": "Shipable ✓", "value": v}
-        return {"status": "r", "text": "Not shipable", "value": v}
+        return _R("g", "Shipable ✓", v) if _is_y(v) else _R("r", "Not shipable", v)
 
     if attr_id == "LISTING_PREP_PLAN_ID":
-        lc = _linked_check(row)
-        if lc["ok"]:
-            return {"status": "g", "text": f"Listing Plan: {v or '—'} ✓ ({lc['why']})", "value": v}
-        return {"status": "r", "text": f"Listing Plan: {v or 'blank'} — {lc['why']}", "value": v}
+        is_fbm = _sku(row).upper().endswith("-FBM")
+        lp = _g(row, "LISTING_PREP_PLAN_ID")
+        lp_ok = _plan_filled(lp)
+        if is_fbm:
+            if lp == "316":
+                return _R("g", "FBM SKU + Prep 316 ✓", v)
+            if lp_ok:
+                return _R("r", f"FBM SKU must use Prep 316 (found: {lp})", v)
+            return _R("r", "FBM SKU must use Prep 316 (blank)", v)
+        cm = _is_y(_g(row, "LISTING_IS_COMMINGLED"))
+        b0 = _g(row, "MARKETPLACE_SECONDARY_ID").startswith("B0")
+        gl = _is_y(_g(row, "IS_GLASS"))
+        if cm and b0 and not gl:
+            return _R("g", "Commingled + B0 + No Glass — prep plan not required ✓", v)
+        if lp_ok:
+            return _R("g", f"Listing Plan: {lp} ✓", v)
+        return _R("r", "Listing Prep Plan missing" + (" (Glass=Y requires)" if gl else ""), v)
 
     if attr_id == "ITEM_PREP_PLAN_ID":
-        lc = _linked_check(row)
-        if lc["ok"]:
-            return {"status": "g", "text": f"Item Plan: {v or '—'} ✓ ({lc['why']})", "value": v}
-        return {"status": "r", "text": f"Item Plan: {v or 'blank'} — {lc['why']}", "value": v}
+        is_fbm = _sku(row).upper().endswith("-FBM")
+        lp = _g(row, "LISTING_PREP_PLAN_ID")
+        ip = _g(row, "ITEM_PREP_PLAN_ID")
+        lp_ok = _plan_filled(lp)
+        if is_fbm:
+            if lp == "316":
+                return _R("g", "FBM SKU + Listing Prep 316 ✓", v)
+            return _R("r", "FBM SKU must use Prep 316", v)
+        cm = _is_y(_g(row, "LISTING_IS_COMMINGLED"))
+        b0 = _g(row, "MARKETPLACE_SECONDARY_ID").startswith("B0")
+        gl = _is_y(_g(row, "IS_GLASS"))
+        if cm and b0 and not gl:
+            return _R("g", "Commingled + B0 + No Glass — prep plan not required ✓", v)
+        if lp_ok:
+            return _R("g", f"Listing Plan filled — Item Plan: {ip or '—'} ✓", v)
+        return _R("r", "Listing Prep Plan missing" + (" (Glass=Y requires)" if gl else ""), v)
 
     if attr_id == "CAN_EXPIRE":
-        # Simple pass for any non-blank, blank also passes (no LE partner field available)
-        return {"status": "g", "text": f"Can Expire: {v or 'blank'} ✓", "value": v}
+        ce = _g(row, "CAN_EXPIRE").upper()
+        lie = _g(row, "LISTING_IS_EXPIRABLE").upper()
+        if ce == "" and lie == "":
+            return _R("g", "Both blank ✓", v)
+        if (ce == "Y" and lie == "N") or (ce == "N" and lie == "Y"):
+            return _R("r", f"Mismatch — CE: {ce} / LE: {lie}", v)
+        return _R("g", f"Can Expire: {ce or 'blank'} / LE: {lie or 'blank'} ✓", v)
 
-    if attr_id == "IS_GLASS":
-        lc = _linked_check(row)
-        if lc["ok"]:
-            return {"status": "g", "text": f"Glass={v or '—'} ✓ ({lc['why']})", "value": v}
-        return {"status": "r", "text": f"Glass={v or '—'} — {lc['why']}", "value": v}
+    if attr_id == "LISTING_IS_EXPIRABLE":
+        ce = _g(row, "CAN_EXPIRE").upper()
+        lie = _g(row, "LISTING_IS_EXPIRABLE").upper()
+        if ce == "" and lie == "":
+            return _R("g", "Both blank ✓", v)
+        if (ce == "Y" and lie == "N") or (ce == "N" and lie == "Y"):
+            return _R("r", f"Mismatch — CE: {ce} / LE: {lie}", v)
+        return _R("g", f"Expirable: {lie or 'blank'} / CE: {ce or 'blank'} ✓", v)
 
-    if attr_id == "CATALOG_DNO_STATUS":
-        if vl == "dno" or _is_y(v):
-            return {"status": "r", "text": "DNO active ⚠", "value": v}
-        return {"status": "g", "text": "Not DNO ✓", "value": v}
+    if attr_id == "ENROLLED_IN_TRANSPARENCY_PROGRAM":
+        if _is_y(v):
+            return _R("g", "Enrolled in Transparency ✓ (bypass active)", v)
+        return _R("g", v or "Not enrolled (no effect)", v)
 
-    if attr_id == "IS_TEMPORARY":
-        return {"status": "i", "text": v or "—", "value": v}
+    return _R("n", v or "—", v)
 
-    if attr_id == "MARKETPLACE_SECONDARY_ID_TYPE":
-        return {"status": "i", "text": v or "—", "value": v}
 
-    return {"status": "n", "text": v or "—", "value": v}
+# ── Suggested prep plan (advisory only — not a pass/fail attribute) ──
+_APPAREL_KEYWORDS = [
+    "shirt", "t-shirt", "tshirt", "tee", "polo", "pants", "jeans", "leggings",
+    "shorts", "trousers", "dress", "skirt", "gown", "jacket", "coat", "hoodie",
+    "sweater", "cardigan", "sweatshirt", "socks", "underwear", "briefs", "boxers",
+    "bra", "apparel", "clothing", "garment", "attire",
+]
+_LIQUID_KEYWORDS = [
+    "oil", "liquid", "drops", "syrup", "juice", "serum", "lotion", "tonic",
+    "elixir", "solution", "spray", "mist",
+]
+_MPN_PREP_MAP = {
+    "SA512": 109, "SA518": 110, "SA519": 111, "SA520": 112, "SA525": 113, "SA540": 114,
+    "SB332": 115, "SB335": 116, "SD415": 117, "SF714": 118, "SF815": 119,
+    "ADK060": 317, "DIG060": 318, "CPB060": 319, "HGD060": 320, "ANT30L": 321, "PBM050": 322,
+    "MGC060": 323, "BER060": 324, "OV1000": 325, "VB1260": 326, "LYS120": 327, "NEUMAG": 328,
+    "MGC240": 329, "HYS120": 330, "BVC120": 331, "INF060": 332, "EMD10Z": 333, "BSP060": 334,
+    "BSP120": 335, "DIG180": 336, "QUN090": 337, "IMP120": 338, "STC090": 339, "MGC120": 340,
+    "FEC120": 341, "DIG090": 342, "CBF144": 343, "FLM060": 344, "HIS120": 345, "OVU120": 346,
+    "ORG120": 347, "SEN120": 348, "OPO120": 349, "WBC390": 350, "SPM060": 351, "PBM100": 353,
+    "NTS120": 418, "PPPVAN": 419, "PPPCHC": 420, "MHN120": 421, "PBS060": 422, "NAC120": 423,
+}
+_EU_PREFIXES = ("UK-", "EU-", "DE-", "FR-", "IT-", "ES-", "NL-", "PL-", "BE-", "SE-")
+
+
+def _detect_region(sku):
+    s = (sku or "").strip().upper()
+    if not s:
+        return "UNKNOWN"
+    if s.startswith("SD-") or s.startswith("MX-") or s.startswith("CA-"):
+        return "US"
+    for p in _EU_PREFIXES:
+        if s.startswith(p):
+            return "EU"
+    return "UNKNOWN"
+
+
+def _kw_match(name, keywords):
+    if not name:
+        return False
+    n = name.lower()
+    for k in keywords:
+        if re.search(r"\b" + re.escape(k) + r"\b", n):
+            return True
+    return False
+
+
+def _is_pandora(sku):
+    return "DORA" in (sku or "").upper()
+
+
+def _pandora_size(name):
+    if not name:
+        return "unclear"
+    n = name.lower()
+    if re.search(r"\b(ring|earring|earrings|stud|studs)\b", n):
+        return "small"
+    if re.search(r"\b(necklace|bracelet|bangle|chain)\b", n):
+        return "large"
+    return "unclear"
+
+
+def suggest_prep(row):
+    """Return {'id','desc','note'} advisory prep plan, or None if region unknown."""
+    sku = _sku(row)
+    region = _detect_region(sku)
+    if region == "UNKNOWN":
+        return None
+    glass = _is_y(_g(row, "IS_GLASS"))
+    bundle = _is_y(_g(row, "IS_BUNDLE"))
+    enrolled = _is_y(_g(row, "ENROLLED_IN_TRANSPARENCY_PROGRAM"))
+    name = _g(row, "PRODUCT_NAME")
+    apparel = _kw_match(name, _APPAREL_KEYWORDS)
+
+    if region == "US":
+        if enrolled:
+            if glass and bundle:
+                return {"id": "311", "desc": "Bundle in a bubble bag, FNSKU/transparency label", "note": ""}
+            if glass:
+                return {"id": "310", "desc": "Bubble Bag, FNSKU/Transparency Label", "note": ""}
+            if bundle:
+                return {"id": "307", "desc": "Transparency/FNSKU Label & Polybag", "note": ""}
+            if apparel:
+                return {"id": "308", "desc": "Poly Bag & Transparency/FNSKU Label", "note": ""}
+            return {"id": "309", "desc": "Transparency/FNSKU Label", "note": ""}
+        if glass and bundle:
+            return {"id": "315", "desc": "Bundle in a bubble bag and FNSKU", "note": ""}
+        if glass:
+            return {"id": "304", "desc": "Bubble Bag and FNSKU Label", "note": ""}
+        if bundle:
+            return {"id": "—", "desc": "Bundle in a poly and FNSKU", "note": "No standard ID assigned"}
+        if apparel:
+            return {"id": "2", "desc": "Poly Bag and FNSKU", "note": ""}
+        return {"id": "1", "desc": "FNSKU over barcode (default)", "note": ""}
+
+    if region == "EU":
+        mpn = _g(row, "MPN").upper()
+        if mpn and mpn in _MPN_PREP_MAP:
+            pid = _MPN_PREP_MAP[mpn]
+            if 109 <= pid <= 119:
+                return {"id": str(pid), "desc": f"Apply label {mpn} and FNSKU label", "note": ""}
+            return {"id": str(pid), "desc": f"Apply label {mpn} and FNSKU & expiry date label", "note": ""}
+        if _is_pandora(sku):
+            sz = _pandora_size(name)
+            if sz == "small":
+                return {"id": "84", "desc": "Small Pandora box, Pandora poly bag, FNSKU transparency label", "note": ""}
+            if sz == "large":
+                return {"id": "85", "desc": "Large Pandora box, Pandora poly bag, FNSKU transparency label", "note": ""}
+            return {"id": "—", "desc": "Pandora item — size unclear from product name", "note": "Review manually"}
+        if glass:
+            return {"id": "83", "desc": "Bubble bag and FNSKU label", "note": ""}
+        if _kw_match(name, _LIQUID_KEYWORDS) or apparel:
+            return {"id": "82", "desc": "Poly bag and FNSKU", "note": ""}
+        return {"id": "81", "desc": "FNSKU over barcode (default)", "note": ""}
+
+    return None
 
 
 def run_fr_check(df, selected_attrs):
@@ -647,6 +829,7 @@ def run_fr_check(df, selected_attrs):
             "red_count": red_count,
             "info_count": info_count,
             "details": row_results,
+            "suggested_prep": suggest_prep(row),
             "raw_row": row.to_dict(),
         })
     return results
@@ -1905,6 +2088,18 @@ with fr_tab:
                     f'</div>',
                     unsafe_allow_html=True
                 )
+                # Suggested prep plan (advisory) — region inferred from SKU prefix
+                sp = drill.get("suggested_prep")
+                if sp:
+                    sp_note = f" · {sp['note']}" if sp.get("note") else ""
+                    st.markdown(
+                        f'<div style="background:rgba(59,130,246,0.12);border-left:3px solid #3b82f6;'
+                        f'border-radius:6px;padding:10px 14px;margin-bottom:12px;font-size:12px;">'
+                        f'💡 <b>Suggested Prep Plan:</b> {sp["id"]} — {sp["desc"]}{sp_note}'
+                        f'<span style="color:#94a3b8;"> (advisory, inferred from SKU/product — verify before use)</span>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
                 # Build detail table — split into two columns: checks first, then info
                 check_rows = []
                 info_rows = []
