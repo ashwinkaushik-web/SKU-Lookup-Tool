@@ -1435,14 +1435,26 @@ IRS_DISPLAY_COLS = [
 ]
 
 
-def build_irs_query(ids):
+def build_irs_query(ids=None):
     """Outstanding listing issues from LISTING_ISSUES_OUTSTANDING_DETAILS.
-    Searchable by SKU / Listing Identifier / Master ID / Listing ID.
-    NOTE: source is a compute-on-read VIEW — always ID-filtered, still slow.
+
+    The source is a compute-on-read VIEW: it recomputes the whole outstanding
+    population (ranks + aggregates) before any WHERE applies, so filtering by ID
+    does NOT make it faster. Strategy: pull the WHOLE view ONCE (ids=None),
+    cache it in memory, then search / filter instantly in pandas. Passing ids
+    keeps the old server-side single-listing path available if ever needed.
     """
     def safe(s):
         return s.strip().replace("'", "''")
-    upper_list = ", ".join(f"UPPER('{safe(s)}')" for s in ids if s.strip()) or "''"
+    where = ""
+    if ids:
+        upper_list = ", ".join(f"UPPER('{safe(s)}')" for s in ids if s.strip()) or "''"
+        where = (
+            f"WHERE UPPER(LISTING_SKU) IN ({upper_list})\n"
+            f"   OR UPPER(LISTING_IDENTIFIER) IN ({upper_list})\n"
+            f"   OR UPPER(LISTING_MASTER_ID) IN ({upper_list})\n"
+            f"   OR UPPER(TO_VARCHAR(LISTING_ID)) IN ({upper_list})"
+        )
     return f"""
 SELECT
     OVERALL_LISTING_RANK                               AS "Rank",
@@ -1486,30 +1498,54 @@ SELECT
     IOI_UPDATED_QTY                                    AS "IOI Updated Qty",
     IOI_ORDERED_COMPONENT_QTY                          AS "IOI Ordered Component Qty",
     IOI_UPDATED_COMPONENT_QTY                          AS "IOI Updated Component Qty",
-    COUNT(DISTINCT LISTING_ID) OVER ()                 AS "Distinct Listings",
     LISTING_FAILURE_PERIOD_DAYS_OUTSTANDING            AS "Days Outstanding",
     LISTING_MARKETPLACE                                AS "Marketplace",
     WOI_STATUS                                         AS "WOI Status",
     ISL_STATUS                                         AS "ISL Status",
     LISTING_FULFILLMENT_CHANNEL                        AS "Fulfillment Channel"
 FROM PATTERN_DB.OPERATIONS.LISTING_ISSUES_OUTSTANDING_DETAILS
-WHERE UPPER(LISTING_SKU) IN ({upper_list})
-   OR UPPER(LISTING_IDENTIFIER) IN ({upper_list})
-   OR UPPER(LISTING_MASTER_ID) IN ({upper_list})
-   OR UPPER(TO_VARCHAR(LISTING_ID)) IN ({upper_list})
+{where}
 ORDER BY "Rank"
 """
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def _cached_run_irs_lookup(ids_tuple):
-    ids = list(ids_tuple)
+def ist_data_day():
+    """IST business day that rolls over at 06:00 IST. Used as the cache key so
+    the dataset refreshes once each morning (IST) and is held for the whole day.
+    The first person to open the tab after 06:00 IST triggers the fresh pull;
+    everyone else that IST day gets the cached copy instantly."""
+    ist = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=5, minutes=30)
+    if ist.hour < 6:
+        ist = ist - datetime.timedelta(days=1)
+    return ist.strftime("%Y-%m-%d")
+
+
+@st.cache_data(ttl=60 * 60 * 26, show_spinner=False)
+def load_irs_all(day):
+    """Pull the ENTIRE outstanding-issues view once per IST business day and
+    cache it (keyed by `day` from ist_data_day()). Slow the first time each
+    morning, then every search/filter runs instantly against this in-memory
+    copy for the rest of the IST day."""
     conn = get_connection()
-    return pd.read_sql(build_irs_query(ids), conn)
+    return pd.read_sql(build_irs_query(None), conn)
 
 
-def run_irs_lookup(ids):
-    return _cached_run_irs_lookup(tuple(sorted(set(s.strip() for s in ids if s.strip()))))
+def filter_irs(df, ids):
+    """In-pandas ID filter across the four searchable ID columns."""
+    if df.empty or not ids:
+        return df.iloc[0:0] if ids else df
+    wanted = {s.strip().upper() for s in ids if s.strip()}
+
+    def col_up(col):
+        return df[col].astype(str).str.strip().str.upper() if col in df.columns else pd.Series([""] * len(df), index=df.index)
+
+    mask = (
+        col_up("SKU").isin(wanted)
+        | col_up("Listing Identifier").isin(wanted)
+        | col_up("Master ID").isin(wanted)
+        | col_up("Listing ID").isin(wanted)
+    )
+    return df[mask]
 
 
 search_tab, fr_tab, inventory_tab, irs_tab = st.tabs(
@@ -2863,53 +2899,72 @@ with irs_tab:
     st.markdown("")
     st.markdown("### 🚨 Listing IRS — Outstanding Issues")
     st.caption(
-        "Look up a listing's outstanding inbound / work-order issues from "
-        "`LISTING_ISSUES_OUTSTANDING_DETAILS`. Search by **SKU, Listing Identifier, "
-        "Master ID, or Listing ID**."
+        "Outstanding inbound / work-order issues from `LISTING_ISSUES_OUTSTANDING_DETAILS`. "
+        "Search by **SKU, Listing Identifier, Master ID, or Listing ID**."
     )
-    st.warning(
-        "⏳ This report runs on a heavy Snowflake **view** that computes on read, so a "
-        "lookup can take **1–3 minutes** — it can't be sped up from here (a materialised "
-        "table would be the real fix). Results are cached for 5 minutes."
+    st.info(
+        "⚡ **How this stays fast:** the source is a heavy compute-on-read view, so instead "
+        "of querying it on every search, the tab loads the whole issues dataset **once each "
+        "morning (06:00 IST)** and keeps it in memory for the rest of the IST day. The first "
+        "load of the day takes ~1–3 min; after that, every search and filter is **instant**. "
+        "Use Refresh to force a fresh pull."
     )
     st.markdown("")
 
+    _data_day = ist_data_day()
+
+    # ── Load / refresh the full dataset (cached per IST business day) ──
+    lc1, lc2 = st.columns([1, 3])
+    with lc1:
+        if st.button("⤓ Load / refresh data", type="primary", use_container_width=True, key="irs_load"):
+            load_irs_all.clear()
+            st.session_state.pop("irs_all_day", None)
+            with st.spinner("Loading the outstanding-issues dataset (one-time, ~1–3 min)…"):
+                try:
+                    st.session_state["irs_all"] = load_irs_all(_data_day)
+                    st.session_state["irs_all_day"] = _data_day
+                except Exception as e:
+                    st.error(f"Load failed: {e}")
+
+    # Auto-load on first visit, and auto-refresh when the IST business day rolls over
+    if st.session_state.get("irs_all_day") != _data_day or "irs_all" not in st.session_state:
+        with st.spinner("Loading the outstanding-issues dataset (one-time, ~1–3 min)…"):
+            try:
+                st.session_state["irs_all"] = load_irs_all(_data_day)
+                st.session_state["irs_all_day"] = _data_day
+            except Exception as e:
+                st.error(f"Load failed: {e}")
+
+    irs_all = st.session_state.get("irs_all")
+    with lc2:
+        if isinstance(irs_all, pd.DataFrame) and not irs_all.empty:
+            _nlist = irs_all["Listing ID"].nunique() if "Listing ID" in irs_all.columns else "?"
+            st.caption(f"✅ Loaded **{len(irs_all):,}** issue rows across **{_nlist:,}** listings "
+                       f"· data as of **{_data_day}** (06:00 IST daily refresh) · searches are instant")
+        else:
+            st.caption("No data loaded yet — click **Load / refresh data**.")
+
+    st.markdown("")
     irs_text = st.text_area(
         "Enter IDs",
         placeholder="One per line, or comma / space separated — SKU, Listing Identifier, "
                     "Master ID, or Listing ID\ne.g.\nUK-HD-699391\nL0NC2POW\nP0M3SJXI\n1234567",
-        height=150, key="irs_text", label_visibility="collapsed",
+        height=140, key="irs_text", label_visibility="collapsed",
     )
     irs_ids = []
     if irs_text.strip():
         irs_ids = [s.strip() for s in re.split(r"[\n,\s\t]+", irs_text.strip()) if s.strip()]
         _seen = set()
         irs_ids = [x for x in irs_ids if not (x in _seen or _seen.add(x))]
-    st.caption(f"**{len(irs_ids)}** ID(s) entered • Max 500")
-    if len(irs_ids) > 500:
-        st.warning("⚠️ Max 500 IDs. Only the first 500 will be processed.")
-        irs_ids = irs_ids[:500]
+    st.caption(f"**{len(irs_ids)}** ID(s) entered — results update instantly as you type")
 
-    if irs_ids:
-        if st.button(f"🚨 Look up issues for {len(irs_ids)} ID(s)",
-                     type="primary", use_container_width=True, key="irs_run"):
-            with st.spinner("Querying the outstanding-issues view — this can take 1–3 minutes…"):
-                try:
-                    dfi = run_irs_lookup(irs_ids)
-                    st.session_state["irs_df"] = dfi
-                    if dfi.empty:
-                        st.info("No outstanding issues found for those IDs. ✅  (No news = good.)")
-                    else:
-                        st.success(
-                            f"✅ Found **{len(dfi)}** issue row(s) across "
-                            f"**{dfi['Listing ID'].nunique()}** listing(s) — see below. 👇"
-                        )
-                except Exception as e:
-                    st.error(f"Query failed: {e}")
+    dfi = None
+    if isinstance(irs_all, pd.DataFrame) and not irs_all.empty and irs_ids:
+        dfi = filter_irs(irs_all, irs_ids).copy()
+        if dfi.empty:
+            st.info("No outstanding issues found for those IDs. ✅  (No news = good.)")
 
-    if "irs_df" in st.session_state and not st.session_state["irs_df"].empty:
-        dfi = st.session_state["irs_df"].copy()
-
+    if dfi is not None and not dfi.empty:
         st.markdown("#### 🔎 Filters")
         fc1, fc2, fc3 = st.columns(3)
         with fc1:
@@ -2933,9 +2988,12 @@ with irs_tab:
                 if min_days > 0:
                     dfi = dfi[_days.fillna(0) >= min_days]
 
+        _distinct = int(dfi["Listing ID"].nunique()) if "Listing ID" in dfi.columns else 0
+        dfi["Distinct Listings"] = _distinct
+
         m1, m2 = st.columns(2)
         m1.metric("Issue Rows", len(dfi))
-        m2.metric("Distinct Listings", int(dfi["Listing ID"].nunique()) if "Listing ID" in dfi.columns else 0)
+        m2.metric("Distinct Listings", _distinct)
 
         # Show columns in the requested order (any missing are simply skipped)
         show_cols = [c for c in IRS_DISPLAY_COLS if c in dfi.columns]
