@@ -124,6 +124,7 @@ COLUMN_MAP = {
     "MPN": {"label": "MPN", "default": True},
     "MARKETPLACE": {"label": "Marketplace", "default": True},
     "VENDOR": {"label": "Vendor", "default": True},
+    "MARKETPLACE_SELLER": {"label": "Marketplace Seller", "default": True},
     "LISTING_FULFILLMENT_TYPE": {"label": "Fulfillment Type", "default": True},
     "IS_DNO": {"label": "DNO", "default": True},
     "DNO_REASON_CODE": {"label": "DNO Reason Code", "default": True},
@@ -237,7 +238,8 @@ q2 AS (
         pc.CAN_EXPIRE AS can_expire,
         pc.FINANCE_APPROVED_WHOLESALE_PRICE_W_CURRENCY AS wholesale_price,
         pc.MAP_W_CURRENCY AS map_price, pc.RETAIL_W_CURRENCY AS retail_price,
-        pc.MSRP_W_CURRENCY AS msrp_price
+        pc.MSRP_W_CURRENCY AS msrp_price,
+        pc.SELLER_NAME AS seller_name
     FROM PATTERN_DB.PUBLIC.PRODUCT_CATALOG_PRODUCTS_AND_LISTINGS_VIEW pc
     -- PUSHED-DOWN FILTER: fetch catalog rows matching the user's input directly, OR any
     -- listing q1 already resolved. Without the last clause, searching by Master ID / MPN /
@@ -278,7 +280,8 @@ base AS (
         q2.can_expire AS CAN_EXPIRE, q2.wholesale_price AS WHOLESALE_PRICE,
         q2.map_price AS MAP_PRICE, q2.retail_price AS RETAIL_PRICE,
         q2.msrp_price AS MSRP_PRICE, q1.dno_note AS DNO_NOTE,
-        q1.dno_reason_code AS DNO_REASON_CODE
+        q1.dno_reason_code AS DNO_REASON_CODE,
+        q2.seller_name AS MARKETPLACE_SELLER
     FROM q1 FULL OUTER JOIN q2 ON q1.listing_id = q2.listing_id
     LEFT JOIN q3 ON q3.listing_id = COALESCE(q1.listing_id, q2.listing_id)
 )
@@ -353,7 +356,8 @@ q2 AS (
         pc.CAN_EXPIRE AS can_expire,
         pc.FINANCE_APPROVED_WHOLESALE_PRICE_W_CURRENCY AS wholesale_price,
         pc.MAP_W_CURRENCY AS map_price, pc.RETAIL_W_CURRENCY AS retail_price,
-        pc.MSRP_W_CURRENCY AS msrp_price
+        pc.MSRP_W_CURRENCY AS msrp_price,
+        pc.SELLER_NAME AS seller_name
     FROM PATTERN_DB.PUBLIC.PRODUCT_CATALOG_PRODUCTS_AND_LISTINGS_VIEW pc
     -- PUSHED-DOWN FILTER: only fetch catalog rows for this brand
     WHERE UPPER(pc.VENDOR_NAME) = UPPER('{safe_vendor}')
@@ -387,7 +391,8 @@ base AS (
         q2.can_expire AS CAN_EXPIRE, q2.wholesale_price AS WHOLESALE_PRICE,
         q2.map_price AS MAP_PRICE, q2.retail_price AS RETAIL_PRICE,
         q2.msrp_price AS MSRP_PRICE, q1.dno_note AS DNO_NOTE,
-        q1.dno_reason_code AS DNO_REASON_CODE
+        q1.dno_reason_code AS DNO_REASON_CODE,
+        q2.seller_name AS MARKETPLACE_SELLER
     FROM q1 FULL OUTER JOIN q2 ON q1.listing_id = q2.listing_id
     LEFT JOIN q3 ON q3.listing_id = COALESCE(q1.listing_id, q2.listing_id)
 )
