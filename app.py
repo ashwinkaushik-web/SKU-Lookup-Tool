@@ -1414,7 +1414,107 @@ REGION_OPTIONS = ["All", "UK", "EU", "Middle East", "US", "Australia", "Canada",
 # ══════════════════════════════════════════════
 # Input + Results in tabs
 # ══════════════════════════════════════════════
-search_tab, fr_tab, inventory_tab = st.tabs(["🔍 Catalogue Lookup", "🔬 FR Check", "📦 Inventory"])
+# ══════════════════════════════════════════════
+# Listing IRS — Outstanding listing-issues lookup
+# ══════════════════════════════════════════════
+# Column order as requested (display). Extra columns after "Distinct Listings"
+# power the in-app filters.
+IRS_DISPLAY_COLS = [
+    "Rank", "Listing Identifier", "SKU", "Master ID", "Storage Units (Global)",
+    "Brand", "Seller", "Country Code", "Inbound Issue Type", "Inbound Issue Details",
+    "IB Issue Details", "Listing Failure Period Details", "Listing DNO Details",
+    "Listing Last Shipped Date", "Listing ID", "WO Source Type", "WO Source",
+    "WO Warehouse", "Storage Units (Warehouse)", "Work Order (WO) ID",
+    "Work Order Item (WOI) ID", "Inbound Order (IO) Number", "Component IO Number",
+    "ISL", "WOI Ship By Date", "ISL Appt/IO Placed Date", "DNO End Date", "DNO Note",
+    "DNO Reason Code", "DNO Start Date", "DNO Status", "WOI Remaining Qty",
+    "WOI Updated Qty", "IOI Ordered Qty", "IOI Updated Qty",
+    "IOI Ordered Component Qty", "IOI Updated Component Qty", "Distinct Listings",
+    # ── filter-support extras ──
+    "Days Outstanding", "Marketplace", "WOI Status", "ISL Status", "Fulfillment Channel",
+]
+
+
+def build_irs_query(ids):
+    """Outstanding listing issues from LISTING_ISSUES_OUTSTANDING_DETAILS.
+    Searchable by SKU / Listing Identifier / Master ID / Listing ID.
+    NOTE: source is a compute-on-read VIEW — always ID-filtered, still slow.
+    """
+    def safe(s):
+        return s.strip().replace("'", "''")
+    upper_list = ", ".join(f"UPPER('{safe(s)}')" for s in ids if s.strip()) or "''"
+    return f"""
+SELECT
+    OVERALL_LISTING_RANK                               AS "Rank",
+    LISTING_IDENTIFIER                                 AS "Listing Identifier",
+    LISTING_SKU                                        AS "SKU",
+    LISTING_MASTER_ID                                  AS "Master ID",
+    CURRENT_GLOBAL_UNITS                               AS "Storage Units (Global)",
+    BRAND_NAME                                         AS "Brand",
+    LISTING_SELLER                                     AS "Seller",
+    LISTING_MARKETPLACE_COUNTRY_CODE                   AS "Country Code",
+    INBOUND_ISSUE_TYPE                                 AS "Inbound Issue Type",
+    INBOUND_ISSUE_DETAILS                              AS "Inbound Issue Details",
+    REPLACE(INBOUND_ISSUE_DETAILS, '_', ' ')           AS "IB Issue Details",
+    LISTING_FAILURE_PERIOD_DETAILS                     AS "Listing Failure Period Details",
+    CASE WHEN LISTING_DNO_START_DATE IS NOT NULL
+         THEN 'DNO Start: ' || LISTING_DNO_START_DATE
+              || ' | DNO End: ' || LISTING_DNO_END_DATE
+              || ' | DNO Note: ' || LISTING_DNO_NOTE
+    END                                                AS "Listing DNO Details",
+    LISTING_LAST_SHIPPED_AT                            AS "Listing Last Shipped Date",
+    LISTING_ID                                         AS "Listing ID",
+    WO_SOURCE_TYPE                                     AS "WO Source Type",
+    WO_SOURCE                                          AS "WO Source",
+    WO_WAREHOUSE_NAME                                  AS "WO Warehouse",
+    CURRENT_WAREHOUSE_UNITS                            AS "Storage Units (Warehouse)",
+    WO_ID                                              AS "Work Order (WO) ID",
+    WOI_ID                                             AS "Work Order Item (WOI) ID",
+    IO_NUMBER                                          AS "Inbound Order (IO) Number",
+    COALESCE(COMP_IO_NUMBER, CALC_COMPONENT_IO_NUMBER) AS "Component IO Number",
+    ISL                                                AS "ISL",
+    WOI_ORIGINAL_SHIP_BY_DATE                          AS "WOI Ship By Date",
+    COALESCE(ISL_APT_START_TIME, IO_PLACED_AT)         AS "ISL Appt/IO Placed Date",
+    LISTING_DNO_END_DATE                               AS "DNO End Date",
+    LISTING_DNO_NOTE                                   AS "DNO Note",
+    LISTING_DNO_REASON_CODE                            AS "DNO Reason Code",
+    LISTING_DNO_START_DATE                             AS "DNO Start Date",
+    LISTING_DNO_STATUS                                 AS "DNO Status",
+    WOI_REMAINING_QTY                                  AS "WOI Remaining Qty",
+    WOI_UPDATED_QTY                                    AS "WOI Updated Qty",
+    IOI_ORDERED_QTY                                    AS "IOI Ordered Qty",
+    IOI_UPDATED_QTY                                    AS "IOI Updated Qty",
+    IOI_ORDERED_COMPONENT_QTY                          AS "IOI Ordered Component Qty",
+    IOI_UPDATED_COMPONENT_QTY                          AS "IOI Updated Component Qty",
+    COUNT(DISTINCT LISTING_ID) OVER ()                 AS "Distinct Listings",
+    LISTING_FAILURE_PERIOD_DAYS_OUTSTANDING            AS "Days Outstanding",
+    LISTING_MARKETPLACE                                AS "Marketplace",
+    WOI_STATUS                                         AS "WOI Status",
+    ISL_STATUS                                         AS "ISL Status",
+    LISTING_FULFILLMENT_CHANNEL                        AS "Fulfillment Channel"
+FROM PATTERN_DB.OPERATIONS.LISTING_ISSUES_OUTSTANDING_DETAILS
+WHERE UPPER(LISTING_SKU) IN ({upper_list})
+   OR UPPER(LISTING_IDENTIFIER) IN ({upper_list})
+   OR UPPER(LISTING_MASTER_ID) IN ({upper_list})
+   OR UPPER(TO_VARCHAR(LISTING_ID)) IN ({upper_list})
+ORDER BY "Rank"
+"""
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_run_irs_lookup(ids_tuple):
+    ids = list(ids_tuple)
+    conn = get_connection()
+    return pd.read_sql(build_irs_query(ids), conn)
+
+
+def run_irs_lookup(ids):
+    return _cached_run_irs_lookup(tuple(sorted(set(s.strip() for s in ids if s.strip()))))
+
+
+search_tab, fr_tab, inventory_tab, irs_tab = st.tabs(
+    ["🔍 Catalogue Lookup", "🔬 FR Check", "📦 Inventory", "🚨 Listing IRS"]
+)
 
 with search_tab:
     st.markdown("")
@@ -2757,3 +2857,93 @@ with inventory_tab:
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True, key="inv_dl_filt_xlsx",
             )
+
+
+with irs_tab:
+    st.markdown("")
+    st.markdown("### 🚨 Listing IRS — Outstanding Issues")
+    st.caption(
+        "Look up a listing's outstanding inbound / work-order issues from "
+        "`LISTING_ISSUES_OUTSTANDING_DETAILS`. Search by **SKU, Listing Identifier, "
+        "Master ID, or Listing ID**."
+    )
+    st.warning(
+        "⏳ This report runs on a heavy Snowflake **view** that computes on read, so a "
+        "lookup can take **1–3 minutes** — it can't be sped up from here (a materialised "
+        "table would be the real fix). Results are cached for 5 minutes."
+    )
+    st.markdown("")
+
+    irs_text = st.text_area(
+        "Enter IDs",
+        placeholder="One per line, or comma / space separated — SKU, Listing Identifier, "
+                    "Master ID, or Listing ID\ne.g.\nUK-HD-699391\nL0NC2POW\nP0M3SJXI\n1234567",
+        height=150, key="irs_text", label_visibility="collapsed",
+    )
+    irs_ids = []
+    if irs_text.strip():
+        irs_ids = [s.strip() for s in re.split(r"[\n,\s\t]+", irs_text.strip()) if s.strip()]
+        _seen = set()
+        irs_ids = [x for x in irs_ids if not (x in _seen or _seen.add(x))]
+    st.caption(f"**{len(irs_ids)}** ID(s) entered • Max 500")
+    if len(irs_ids) > 500:
+        st.warning("⚠️ Max 500 IDs. Only the first 500 will be processed.")
+        irs_ids = irs_ids[:500]
+
+    if irs_ids:
+        if st.button(f"🚨 Look up issues for {len(irs_ids)} ID(s)",
+                     type="primary", use_container_width=True, key="irs_run"):
+            with st.spinner("Querying the outstanding-issues view — this can take 1–3 minutes…"):
+                try:
+                    dfi = run_irs_lookup(irs_ids)
+                    st.session_state["irs_df"] = dfi
+                    if dfi.empty:
+                        st.info("No outstanding issues found for those IDs. ✅  (No news = good.)")
+                    else:
+                        st.success(
+                            f"✅ Found **{len(dfi)}** issue row(s) across "
+                            f"**{dfi['Listing ID'].nunique()}** listing(s) — see below. 👇"
+                        )
+                except Exception as e:
+                    st.error(f"Query failed: {e}")
+
+    if "irs_df" in st.session_state and not st.session_state["irs_df"].empty:
+        dfi = st.session_state["irs_df"].copy()
+
+        st.markdown("#### 🔎 Filters")
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1:
+            dfi = multiselect_filter(dfi, "Brand", "Brand", "irs_f_brand")
+            dfi = multiselect_filter(dfi, "Seller", "Seller", "irs_f_seller")
+            dfi = multiselect_filter(dfi, "Country Code", "Country Code", "irs_f_country")
+        with fc2:
+            dfi = multiselect_filter(dfi, "Inbound Issue Type", "Inbound Issue Type", "irs_f_ibtype")
+            dfi = multiselect_filter(dfi, "DNO Status", "DNO Status", "irs_f_dno")
+            dfi = multiselect_filter(dfi, "WO Warehouse", "WO Warehouse", "irs_f_whse")
+        with fc3:
+            dfi = multiselect_filter(dfi, "Marketplace", "Marketplace", "irs_f_mp")
+            dfi = multiselect_filter(dfi, "WOI Status", "WOI Status", "irs_f_woi")
+            dfi = multiselect_filter(dfi, "Fulfillment Channel", "Fulfillment Channel", "irs_f_fc")
+
+        if "Days Outstanding" in dfi.columns:
+            _days = pd.to_numeric(dfi["Days Outstanding"], errors="coerce")
+            _max_days = int(_days.max()) if _days.notna().any() else 0
+            if _max_days > 0:
+                min_days = st.slider("Min Days Outstanding", 0, _max_days, 0, key="irs_f_days")
+                if min_days > 0:
+                    dfi = dfi[_days.fillna(0) >= min_days]
+
+        m1, m2 = st.columns(2)
+        m1.metric("Issue Rows", len(dfi))
+        m2.metric("Distinct Listings", int(dfi["Listing ID"].nunique()) if "Listing ID" in dfi.columns else 0)
+
+        # Show columns in the requested order (any missing are simply skipped)
+        show_cols = [c for c in IRS_DISPLAY_COLS if c in dfi.columns]
+        st.dataframe(dfi[show_cols], use_container_width=True, hide_index=True, height=600)
+
+        st.download_button(
+            "⬇️ Download results (CSV)",
+            dfi[show_cols].to_csv(index=False),
+            f"listing_irs_{datetime.date.today().isoformat()}.csv",
+            "text/csv", use_container_width=True, key="irs_dl_csv",
+        )
