@@ -1432,6 +1432,7 @@ IRS_DISPLAY_COLS = [
     "IOI Ordered Component Qty", "IOI Updated Component Qty", "Distinct Listings",
     # ── filter-support extras ──
     "Days Outstanding", "Marketplace", "WOI Status", "ISL Status", "Fulfillment Channel",
+    "Is Active IB Issue", "Has Units in Storage", "Item Is 3P Owned",
 ]
 
 
@@ -1502,7 +1503,10 @@ SELECT
     LISTING_MARKETPLACE                                AS "Marketplace",
     WOI_STATUS                                         AS "WOI Status",
     ISL_STATUS                                         AS "ISL Status",
-    LISTING_FULFILLMENT_CHANNEL                        AS "Fulfillment Channel"
+    LISTING_FULFILLMENT_CHANNEL                        AS "Fulfillment Channel",
+    IS_ACTIVE_IB_ISSUE                                 AS "Is Active IB Issue",
+    LISTING_HAS_STORAGE_UNITS                          AS "Has Units in Storage",
+    LISTING_ITEM_IS_THIRD_PARTY_OWNED                  AS "Item Is 3P Owned"
 FROM PATTERN_DB.OPERATIONS.LISTING_ISSUES_OUTSTANDING_DETAILS
 {where}
 ORDER BY "Rank"
@@ -2971,14 +2975,17 @@ with irs_tab:
             dfi = multiselect_filter(dfi, "Brand", "Brand", "irs_f_brand")
             dfi = multiselect_filter(dfi, "Seller", "Seller", "irs_f_seller")
             dfi = multiselect_filter(dfi, "Country Code", "Country Code", "irs_f_country")
+            dfi = multiselect_filter(dfi, "Marketplace", "Marketplace", "irs_f_mp")
         with fc2:
             dfi = multiselect_filter(dfi, "Inbound Issue Type", "Inbound Issue Type", "irs_f_ibtype")
-            dfi = multiselect_filter(dfi, "DNO Status", "DNO Status", "irs_f_dno")
+            dfi = multiselect_filter(dfi, "Inbound Issue Details", "Inbound Issue Details", "irs_f_ibdet")
+            dfi = multiselect_filter(dfi, "WO Source Type", "WO Source Type", "irs_f_wosrc")
             dfi = multiselect_filter(dfi, "WO Warehouse", "WO Warehouse", "irs_f_whse")
         with fc3:
-            dfi = multiselect_filter(dfi, "Marketplace", "Marketplace", "irs_f_mp")
-            dfi = multiselect_filter(dfi, "WOI Status", "WOI Status", "irs_f_woi")
-            dfi = multiselect_filter(dfi, "Fulfillment Channel", "Fulfillment Channel", "irs_f_fc")
+            dfi = multiselect_filter(dfi, "DNO Status", "DNO Status", "irs_f_dno")
+            dfi = bool_multiselect_filter(dfi, "Is Active IB Issue", "Is Active IB Issue", "irs_f_activeib")
+            dfi = bool_multiselect_filter(dfi, "Has Units in Storage", "Listing Has Units in Storage", "irs_f_stor")
+            dfi = bool_multiselect_filter(dfi, "Item Is 3P Owned", "Item Is 3P Owned", "irs_f_3p")
 
         if "Days Outstanding" in dfi.columns:
             _days = pd.to_numeric(dfi["Days Outstanding"], errors="coerce")
