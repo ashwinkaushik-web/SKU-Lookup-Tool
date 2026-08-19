@@ -2016,98 +2016,149 @@ with combined_tab:
     cmb_fr = st.session_state.get("cmb_fr")
     if isinstance(dfc, pd.DataFrame) and not dfc.empty:
         fr_by = {str(r["listing_id"]).strip().upper(): r for r in (cmb_fr or [])}
-        _labels = {a["id"]: a["label"] for a in FR_ATTRIBUTES}
         _check_ids = [a["id"] for a in FR_ATTRIBUTES if a["type"] == "check"]
-        # Catalogue fields flagged as "missing" when blank
         _pc_key = [("ASIN", "ASIN"), ("MPN", "MPN"), ("WHOLESALE_PRICE", "Wholesale Price"),
                    ("SHIPPABLE_TAG", "Shippable"), ("MARKETPLACE_SELLER", "Seller")]
+        _pc_cols = [c for c in COLUMN_MAP if c in dfc.columns]
 
-        seen = set()
-        summary = []
+        def _sval(v):
+            if v is None:
+                return ""
+            s = str(v).strip()
+            return "" if s.lower() == "nan" else s
+
+        _seen = set()
+        _records = []
         for _, prow in dfc.iterrows():
-            lid = str(prow.get("LISTING_ID", "") or "").strip()
-            if not lid or lid.upper() in seen:
+            lid = _sval(prow.get("LISTING_ID"))
+            if not lid or lid.upper() in _seen:
                 continue
-            seen.add(lid.upper())
+            _seen.add(lid.upper())
             frr = fr_by.get(lid.upper())
-            fr_fails = [_labels[a] for a in _check_ids
-                        if frr and frr["details"].get(a, {}).get("status") == "r"]
-            pc_missing = [lbl for col, lbl in _pc_key
-                          if col in dfc.columns and not str(prow.get(col, "") or "").strip()]
+            rec = {}
+            for c in _pc_cols:
+                rec[COLUMN_MAP[c]["label"]] = _sval(prow.get(c))
+            fr_fails = []
+            for a in FR_ATTRIBUTES:
+                det = frr["details"].get(a["id"], {}) if frr else {}
+                stt = det.get("status")
+                colname = "FR · " + a["label"]
+                if a["type"] == "check":
+                    rec[colname] = {"g": "✅", "r": "⛔", "i": "ℹ️", "n": "—"}.get(stt, "—" if frr else "n/a")
+                    if stt == "r":
+                        fr_fails.append(a["label"])
+                else:
+                    rec[colname] = (det.get("value", "") or "—") if frr else "n/a"
+            pc_missing = [lbl for col, lbl in _pc_key if col in dfc.columns and not _sval(prow.get(col))]
             flags = []
             if fr_fails:
                 flags.append("FR: " + ", ".join(fr_fails))
             if pc_missing:
                 flags.append("Missing: " + ", ".join(pc_missing))
-            _dno = prow.get("IS_DNO")
-            summary.append({
-                "Listing ID": lid,
-                "SKU": prow.get("SKU", "") or "",
-                "ASIN": prow.get("ASIN", "") or "",
-                "Master ID": prow.get("MASTER_ID", "") or "",
-                "Marketplace": prow.get("MARKETPLACE", "") or "",
-                "Seller": prow.get("MARKETPLACE_SELLER", "") or "",
-                "DNO": "⛔" if (_dno is True or str(_dno).lower() == "true") else "✓",
-                "FR": ("✅ Pass" if (frr and frr["passed"]) else (f"⛔ {frr['red_count']}" if frr else "—")),
-                "Flags": " · ".join(flags) if flags else "✅ none",
-            })
+            if frr:
+                rec["FR Result"] = "✅ Pass" if frr["passed"] else "⛔ Flagged"
+                rec["FR Issues"] = frr["red_count"]
+            else:
+                rec["FR Result"] = "n/a"
+                rec["FR Issues"] = ""
+            rec["Flags"] = " · ".join(flags) if flags else "✅ none"
+            _records.append(rec)
 
-        n_flagged = sum(1 for s in summary if s["Flags"] != "✅ none")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Listings", len(summary))
-        c2.metric("Flagged", n_flagged)
-        c3.metric("Clean", len(summary) - n_flagged)
+        full = pd.DataFrame(_records)
 
-        sdf = pd.DataFrame(summary)
+        # ── Filters ──
+        only_flagged = False
+        with st.expander("🔎 Filters", expanded=False):
+            f1, f2, f3 = st.columns(3)
+            with f1:
+                if "Marketplace" in full.columns:
+                    full = multiselect_filter(full, "Marketplace", "Marketplace", "cmb_f_mp")
+                if "Vendor" in full.columns:
+                    full = multiselect_filter(full, "Vendor", "Vendor", "cmb_f_vendor")
+            with f2:
+                if "Marketplace Seller" in full.columns:
+                    full = multiselect_filter(full, "Marketplace Seller", "Seller", "cmb_f_seller")
+                if "Country Code" in full.columns:
+                    full = multiselect_filter(full, "Country Code", "Country Code", "cmb_f_cc")
+            with f3:
+                if "FR Result" in full.columns:
+                    full = multiselect_filter(full, "FR Result", "FR Result", "cmb_f_fr")
+                only_flagged = st.checkbox("Only flagged listings", key="cmb_only_flagged")
+        if only_flagged and "Flags" in full.columns:
+            full = full[full["Flags"] != "✅ none"]
+
+        _nf = int((full["Flags"] != "✅ none").sum()) if "Flags" in full.columns else 0
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Listings", len(full))
+        m2.metric("Flagged", _nf)
+        m3.metric("Clean", len(full) - _nf)
+
+        # ── Column picker ──
+        all_cols = list(full.columns)
+        _priority = ["Listing ID", "SKU", "ASIN", "Master ID", "MPN", "Marketplace",
+                     "Marketplace Seller", "Vendor", "DNO", "Shippable", "FR Result", "FR Issues", "Flags"]
+        default_cols = [c for c in _priority if c in all_cols]
+        show_all = st.checkbox("Show all columns (full catalogue + every FR attribute)", key="cmb_show_all")
+        if show_all:
+            sel = all_cols
+        else:
+            sel = st.multiselect("Columns to show", options=all_cols, default=default_cols, key="cmb_cols")
+            if not sel:
+                sel = default_cols
+        sel_cols = [c for c in all_cols if c in set(sel)]
+        _disp = full[sel_cols]
 
         def _cmb_flag_color(r):
             return (["background-color: rgba(239,68,68,0.08)"] * len(r)
                     if r.get("Flags") != "✅ none" else [""] * len(r))
 
-        st.dataframe(sdf.style.apply(_cmb_flag_color, axis=1),
-                     use_container_width=True, hide_index=True,
-                     height=min(600, 90 + 35 * len(sdf)))
-        st.download_button("⬇️ Summary (CSV)", sdf.to_csv(index=False),
-                           f"combined_{datetime.date.today().isoformat()}.csv",
-                           "text/csv", key="cmb_dl")
+        _h = min(640, 90 + 34 * max(len(_disp), 1))
+        if "Flags" in sel_cols:
+            st.dataframe(_disp.style.apply(_cmb_flag_color, axis=1),
+                         use_container_width=True, hide_index=True, height=_h)
+        else:
+            st.dataframe(_disp, use_container_width=True, hide_index=True, height=_h)
 
+        e1, e2 = st.columns(2)
+        e1.download_button("⬇️ Shown columns (CSV)", _disp.to_csv(index=False),
+                           f"combined_shown_{datetime.date.today().isoformat()}.csv",
+                           "text/csv", key="cmb_dl_shown", use_container_width=True)
+        e2.download_button("⬇️ Everything (CSV)", full.to_csv(index=False),
+                           f"combined_full_{datetime.date.today().isoformat()}.csv",
+                           "text/csv", key="cmb_dl_full", use_container_width=True)
+
+        # ── Per-listing drill-down ──
         st.markdown("#### 🔍 Listing detail")
-        _opts = ["— Select a listing —"] + [f"{s['Listing ID']} • {s['SKU'] or '—'}" for s in summary]
+        _lid_list = full["Listing ID"].tolist() if "Listing ID" in full.columns else []
+        _sku_list = full["SKU"].tolist() if "SKU" in full.columns else [""] * len(_lid_list)
+        _opts = ["— Select a listing —"] + [f"{_lid_list[i]} • {(_sku_list[i] or '—')}" for i in range(len(_lid_list))]
         _pick = st.selectbox("Listing", _opts, key="cmb_drill", label_visibility="collapsed")
         if _pick != "— Select a listing —":
-            _lid = summary[_opts.index(_pick) - 1]["Listing ID"]
-            _match = dfc[dfc["LISTING_ID"].astype(str).str.strip() == _lid]
+            _lid = _lid_list[_opts.index(_pick) - 1]
+            _match = dfc[dfc["LISTING_ID"].astype(str).str.strip() == str(_lid)]
             colA, colB = st.columns(2)
             with colA:
                 st.markdown("**Catalogue (PC)**")
                 if not _match.empty:
                     _prow = _match.iloc[0]
-                    _pcrows = []
-                    for col in [c for c in COLUMN_MAP if c in dfc.columns]:
-                        v = _prow.get(col, "")
-                        v = "" if v is None else str(v)
-                        _pcrows.append({
-                            "Attribute": COLUMN_MAP[col]["label"],
-                            "Value": v if (v.strip() and v.lower() != "nan") else "⚠️ (missing)",
-                        })
+                    _pcrows = [{"Attribute": COLUMN_MAP[c]["label"],
+                                "Value": (_sval(_prow.get(c)) or "⚠️ (missing)")}
+                               for c in _pc_cols]
                     st.dataframe(pd.DataFrame(_pcrows), use_container_width=True, hide_index=True, height=520)
             with colB:
                 st.markdown("**FR Check**")
-                _frr = fr_by.get(_lid.upper())
+                _frr = fr_by.get(str(_lid).upper())
                 if _frr:
                     _sp = _frr.get("suggested_prep")
                     if _sp:
                         st.markdown(f"💡 **Suggested Prep:** {_sp['id']} — {_sp['desc']}"
                                     + (f" · {_sp['note']}" if _sp.get('note') else ""))
-                    _frrows = []
-                    for a in FR_ATTRIBUTES:
-                        det = _frr["details"].get(a["id"], {})
-                        _frrows.append({
-                            "Attribute": a["label"],
-                            "Value": det.get("value", "") or "—",
-                            "Status": {"g": "✅", "r": "⛔", "i": "ℹ️", "n": "—"}.get(det.get("status"), "—"),
-                            "Note": det.get("text", "") or "—",
-                        })
+                    _frrows = [{"Attribute": a["label"],
+                                "Value": _frr["details"].get(a["id"], {}).get("value", "") or "—",
+                                "Status": {"g": "✅ Pass", "r": "⛔ Fail", "i": "ℹ️ Info", "n": "—"}.get(
+                                    _frr["details"].get(a["id"], {}).get("status"), "—"),
+                                "Note": _frr["details"].get(a["id"], {}).get("text", "") or "—"}
+                               for a in FR_ATTRIBUTES]
                     st.dataframe(pd.DataFrame(_frrows), use_container_width=True, hide_index=True, height=520)
                 else:
                     st.info("No FR data for this listing.")
@@ -2768,4 +2819,3 @@ with irs_tab:
             f"listing_irs_{datetime.date.today().isoformat()}.csv",
             "text/csv", use_container_width=True, key="irs_dl_csv",
         )
-        
