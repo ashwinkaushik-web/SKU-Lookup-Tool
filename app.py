@@ -2018,197 +2018,288 @@ with combined_tab:
         # De-dupe to one row per listing for both sections
         dfc = dfc.drop_duplicates(subset=["LISTING_ID"]).copy() if "LISTING_ID" in dfc.columns else dfc.copy()
 
-        # ══════════════════════════════════════════════
-        # 📋 CATALOGUE SECTION
-        # ══════════════════════════════════════════════
-        st.markdown("## 📋 Catalogue")
-        _dno_c = int((dfc["IS_DNO"] == True).sum()) if "IS_DNO" in dfc.columns else 0
-        _ship_c = int((dfc["SHIPPABLE_TAG"] == True).sum()) if "SHIPPABLE_TAG" in dfc.columns else 0
-        _fba_c = int((dfc["LISTING_FULFILLMENT_TYPE"].str.upper() == "FBA").sum()) if "LISTING_FULFILLMENT_TYPE" in dfc.columns else 0
-        _act_c = int((dfc["IS_ACTIVE"] == True).sum()) if "IS_ACTIVE" in dfc.columns else 0
-        _mc = st.columns(6)
-        _mc[0].markdown(f'<div class="metric-card mc-total"><div class="label">Total</div><div class="value">{len(dfc)}</div></div>', unsafe_allow_html=True)
-        _mc[1].markdown(f'<div class="metric-card mc-dno"><div class="label">DNO = True</div><div class="value">{_dno_c}</div></div>', unsafe_allow_html=True)
-        _mc[2].markdown(f'<div class="metric-card mc-ship"><div class="label">Shippable</div><div class="value">{_ship_c}</div></div>', unsafe_allow_html=True)
-        _mc[3].markdown(f'<div class="metric-card mc-noship"><div class="label">Not Shippable</div><div class="value">{len(dfc) - _ship_c}</div></div>', unsafe_allow_html=True)
-        _mc[4].markdown(f'<div class="metric-card mc-fba"><div class="label">FBA</div><div class="value">{_fba_c}</div></div>', unsafe_allow_html=True)
-        _mc[5].markdown(f'<div class="metric-card mc-active"><div class="label">Active</div><div class="value">{_act_c}</div></div>', unsafe_allow_html=True)
+        cmb_view = st.radio(
+            "View", ["📊 All-in-one table", "📋 Catalogue view", "🔬 FR check"],
+            horizontal=True, key="cmb_view", label_visibility="collapsed",
+        )
         st.markdown("")
+        if cmb_view == "📋 Catalogue view":
+            # ══════════════════════════════════════════════
+            # 📋 CATALOGUE SECTION
+            # ══════════════════════════════════════════════
+            st.markdown("## 📋 Catalogue")
+            _dno_c = int((dfc["IS_DNO"] == True).sum()) if "IS_DNO" in dfc.columns else 0
+            _ship_c = int((dfc["SHIPPABLE_TAG"] == True).sum()) if "SHIPPABLE_TAG" in dfc.columns else 0
+            _fba_c = int((dfc["LISTING_FULFILLMENT_TYPE"].str.upper() == "FBA").sum()) if "LISTING_FULFILLMENT_TYPE" in dfc.columns else 0
+            _act_c = int((dfc["IS_ACTIVE"] == True).sum()) if "IS_ACTIVE" in dfc.columns else 0
+            _mc = st.columns(6)
+            _mc[0].markdown(f'<div class="metric-card mc-total"><div class="label">Total</div><div class="value">{len(dfc)}</div></div>', unsafe_allow_html=True)
+            _mc[1].markdown(f'<div class="metric-card mc-dno"><div class="label">DNO = True</div><div class="value">{_dno_c}</div></div>', unsafe_allow_html=True)
+            _mc[2].markdown(f'<div class="metric-card mc-ship"><div class="label">Shippable</div><div class="value">{_ship_c}</div></div>', unsafe_allow_html=True)
+            _mc[3].markdown(f'<div class="metric-card mc-noship"><div class="label">Not Shippable</div><div class="value">{len(dfc) - _ship_c}</div></div>', unsafe_allow_html=True)
+            _mc[4].markdown(f'<div class="metric-card mc-fba"><div class="label">FBA</div><div class="value">{_fba_c}</div></div>', unsafe_allow_html=True)
+            _mc[5].markdown(f'<div class="metric-card mc-active"><div class="label">Active</div><div class="value">{_act_c}</div></div>', unsafe_allow_html=True)
+            st.markdown("")
 
-        st.markdown("#### 🔽 Filters")
-        cmb_search = st.text_input("🔍 Search across all fields", placeholder="Type to search...", key="cmb_search_all")
-        pcf = dfc.copy()
-        _fr1 = st.columns(4)
-        with _fr1[0]:
-            _reg = st.selectbox("🌍 Region", REGION_OPTIONS, key="cmb_f_region")
-            if _reg == "Other":
-                _mapped = set().union(*REGION_MAP.values())
-                pcf = pcf[~pcf["MARKETPLACE"].isin(_mapped)]
-            elif _reg != "All":
-                pcf = pcf[pcf["MARKETPLACE"].isin(REGION_MAP.get(_reg, []))]
-        with _fr1[1]:
-            _mpv = sorted(pcf["MARKETPLACE"].dropna().unique().tolist()) if "MARKETPLACE" in pcf.columns else []
-            _selmp = st.multiselect("Marketplace", options=_mpv, default=[], key="cmb_f_mp", placeholder="All")
-            if _selmp:
-                pcf = pcf[pcf["MARKETPLACE"].isin(_selmp)]
-        with _fr1[2]:
-            pcf = multiselect_filter(pcf, "VENDOR", "Vendor", "cmb_f_vn") if "VENDOR" in pcf.columns else pcf
-        with _fr1[3]:
-            pcf = bool_multiselect_filter(pcf, "IS_DNO", "DNO", "cmb_f_dno") if "IS_DNO" in pcf.columns else pcf
-        _fr2 = st.columns(4)
-        with _fr2[0]:
-            pcf = bool_multiselect_filter(pcf, "SHIPPABLE_TAG", "Shippable", "cmb_f_ship") if "SHIPPABLE_TAG" in pcf.columns else pcf
-        with _fr2[1]:
-            pcf = multiselect_filter(pcf, "LISTING_FULFILLMENT_TYPE", "Fulfillment Type", "cmb_f_ff") if "LISTING_FULFILLMENT_TYPE" in pcf.columns else pcf
-        with _fr2[2]:
-            pcf = multiselect_filter(pcf, "COMMINGLED_STATUS", "Commingled", "cmb_f_cm") if "COMMINGLED_STATUS" in pcf.columns else pcf
-        with _fr2[3]:
-            pcf = bool_multiselect_filter(pcf, "IS_ACTIVE", "Active", "cmb_f_active") if "IS_ACTIVE" in pcf.columns else pcf
-        if cmb_search.strip():
-            _m = pcf.astype(str).apply(lambda row: row.str.contains(cmb_search.strip(), case=False).any(), axis=1)
-            pcf = pcf[_m]
-        st.caption(f"Showing **{len(pcf)}** of **{len(dfc)}** listings")
+            st.markdown("#### 🔽 Filters")
+            cmb_search = st.text_input("🔍 Search across all fields", placeholder="Type to search...", key="cmb_search_all")
+            pcf = dfc.copy()
+            _fr1 = st.columns(4)
+            with _fr1[0]:
+                _reg = st.selectbox("🌍 Region", REGION_OPTIONS, key="cmb_f_region")
+                if _reg == "Other":
+                    _mapped = set().union(*REGION_MAP.values())
+                    pcf = pcf[~pcf["MARKETPLACE"].isin(_mapped)]
+                elif _reg != "All":
+                    pcf = pcf[pcf["MARKETPLACE"].isin(REGION_MAP.get(_reg, []))]
+            with _fr1[1]:
+                _mpv = sorted(pcf["MARKETPLACE"].dropna().unique().tolist()) if "MARKETPLACE" in pcf.columns else []
+                _selmp = st.multiselect("Marketplace", options=_mpv, default=[], key="cmb_f_mp", placeholder="All")
+                if _selmp:
+                    pcf = pcf[pcf["MARKETPLACE"].isin(_selmp)]
+            with _fr1[2]:
+                pcf = multiselect_filter(pcf, "VENDOR", "Vendor", "cmb_f_vn") if "VENDOR" in pcf.columns else pcf
+            with _fr1[3]:
+                pcf = bool_multiselect_filter(pcf, "IS_DNO", "DNO", "cmb_f_dno") if "IS_DNO" in pcf.columns else pcf
+            _fr2 = st.columns(4)
+            with _fr2[0]:
+                pcf = bool_multiselect_filter(pcf, "SHIPPABLE_TAG", "Shippable", "cmb_f_ship") if "SHIPPABLE_TAG" in pcf.columns else pcf
+            with _fr2[1]:
+                pcf = multiselect_filter(pcf, "LISTING_FULFILLMENT_TYPE", "Fulfillment Type", "cmb_f_ff") if "LISTING_FULFILLMENT_TYPE" in pcf.columns else pcf
+            with _fr2[2]:
+                pcf = multiselect_filter(pcf, "COMMINGLED_STATUS", "Commingled", "cmb_f_cm") if "COMMINGLED_STATUS" in pcf.columns else pcf
+            with _fr2[3]:
+                pcf = bool_multiselect_filter(pcf, "IS_ACTIVE", "Active", "cmb_f_active") if "IS_ACTIVE" in pcf.columns else pcf
+            if cmb_search.strip():
+                _m = pcf.astype(str).apply(lambda row: row.str.contains(cmb_search.strip(), case=False).any(), axis=1)
+                pcf = pcf[_m]
+            st.caption(f"Showing **{len(pcf)}** of **{len(dfc)}** listings")
 
-        _avail = [k for k in COLUMN_MAP if k in pcf.columns]
-        _defcols = [k for k in _avail if COLUMN_MAP[k]["default"]]
-        _friendly = {COLUMN_MAP[k]["label"]: k for k in _avail}
-        with st.expander("👁 Show / Hide Columns"):
-            _self = st.multiselect("Choose columns", options=[COLUMN_MAP[k]["label"] for k in _avail],
-                                   default=[COLUMN_MAP[k]["label"] for k in _defcols], key="cmb_col_select")
-        _selcols = [_friendly[f] for f in _self] if _self else _defcols
-        _disp = pcf[_selcols].copy()
-        _rmap = {k: COLUMN_MAP[k]["label"] for k in _selcols if k in COLUMN_MAP}
-        _disp = _disp.rename(columns=_rmap)
-        for _ck, (_tl, _fl) in BOOL_COLS.items():
-            _fn = COLUMN_MAP.get(_ck, {}).get("label", _ck)
-            if _fn in _disp.columns:
-                _disp[_fn] = _disp[_fn].apply(lambda x, tl=_tl, fl=_fl: tl if x == True else fl)
+            _avail = [k for k in COLUMN_MAP if k in pcf.columns]
+            _defcols = [k for k in _avail if COLUMN_MAP[k]["default"]]
+            _friendly = {COLUMN_MAP[k]["label"]: k for k in _avail}
+            with st.expander("👁 Show / Hide Columns"):
+                _self = st.multiselect("Choose columns", options=[COLUMN_MAP[k]["label"] for k in _avail],
+                                       default=[COLUMN_MAP[k]["label"] for k in _defcols], key="cmb_col_select")
+            _selcols = [_friendly[f] for f in _self] if _self else _defcols
+            _disp = pcf[_selcols].copy()
+            _rmap = {k: COLUMN_MAP[k]["label"] for k in _selcols if k in COLUMN_MAP}
+            _disp = _disp.rename(columns=_rmap)
+            for _ck, (_tl, _fl) in BOOL_COLS.items():
+                _fn = COLUMN_MAP.get(_ck, {}).get("label", _ck)
+                if _fn in _disp.columns:
+                    _disp[_fn] = _disp[_fn].apply(lambda x, tl=_tl, fl=_fl: tl if x == True else fl)
 
-        def _cmb_color_rows(row):
-            n = len(row)
-            _d = COLUMN_MAP["IS_DNO"]["label"]; _s = COLUMN_MAP["SHIPPABLE_TAG"]["label"]
-            _a = COLUMN_MAP["IS_ACTIVE"]["label"]; _di = COLUMN_MAP["IS_DISCONTINUED"]["label"]
-            if _d in row.index and "⛔ YES — DNO" in str(row.get(_d, "")):
-                return ["background-color: rgba(239,68,68,0.10)"] * n
-            if _di in row.index and "⛔ Discontinued" in str(row.get(_di, "")):
-                return ["background-color: rgba(245,158,11,0.08)"] * n
-            if _a in row.index and "❌ Inactive" in str(row.get(_a, "")):
-                return ["background-color: rgba(100,116,139,0.10)"] * n
-            if _s in row.index and "✅ YES" in str(row.get(_s, "")):
-                return ["background-color: rgba(34,197,94,0.05)"] * n
-            return [""] * n
+            def _cmb_color_rows(row):
+                n = len(row)
+                _d = COLUMN_MAP["IS_DNO"]["label"]; _s = COLUMN_MAP["SHIPPABLE_TAG"]["label"]
+                _a = COLUMN_MAP["IS_ACTIVE"]["label"]; _di = COLUMN_MAP["IS_DISCONTINUED"]["label"]
+                if _d in row.index and "⛔ YES — DNO" in str(row.get(_d, "")):
+                    return ["background-color: rgba(239,68,68,0.10)"] * n
+                if _di in row.index and "⛔ Discontinued" in str(row.get(_di, "")):
+                    return ["background-color: rgba(245,158,11,0.08)"] * n
+                if _a in row.index and "❌ Inactive" in str(row.get(_a, "")):
+                    return ["background-color: rgba(100,116,139,0.10)"] * n
+                if _s in row.index and "✅ YES" in str(row.get(_s, "")):
+                    return ["background-color: rgba(34,197,94,0.05)"] * n
+                return [""] * n
 
-        if len(_disp) > 5000:
-            st.dataframe(_disp, use_container_width=True, hide_index=True, height=600)
-        else:
-            st.dataframe(_disp.style.apply(_cmb_color_rows, axis=1), use_container_width=True,
-                         hide_index=True, height=min(len(_disp) * 38 + 40, 600))
-        _pe1, _pe2 = st.columns(2)
-        _pe1.download_button("⬇️ Catalogue — all (CSV)", dfc[_selcols].rename(columns=_rmap).to_csv(index=False),
-                             f"combined_catalogue_all_{datetime.date.today().isoformat()}.csv", "text/csv",
-                             use_container_width=True, key="cmb_pc_dl_all")
-        _pe2.download_button("⬇️ Catalogue — filtered (CSV)", pcf[_selcols].rename(columns=_rmap).to_csv(index=False),
-                             f"combined_catalogue_filtered_{datetime.date.today().isoformat()}.csv", "text/csv",
-                             use_container_width=True, key="cmb_pc_dl_filt")
-
-        # ══════════════════════════════════════════════
-        # 🔬 FR CHECK SECTION
-        # ══════════════════════════════════════════════
-        st.markdown("---")
-        st.markdown("## 🔬 FR Check")
-        if not isinstance(frdf, pd.DataFrame) or frdf.empty:
-            st.info("No FR data resolved for these listings.")
-        else:
-            _albl = {a["id"]: a["label"] for a in FR_ATTRIBUTES}
-            _preset = st.radio("Attributes to check", ["Quick Check", "All Attributes", "Custom"],
-                               horizontal=True, key="cmb_fr_preset")
-            if _preset == "Quick Check":
-                _sel_attr = [a for a in QUICK_CHECK_ATTRS if a in _albl]
-            elif _preset == "All Attributes":
-                _sel_attr = [a["id"] for a in FR_ATTRIBUTES]
+            if len(_disp) > 5000:
+                st.dataframe(_disp, use_container_width=True, hide_index=True, height=600)
             else:
-                _picklbls = st.multiselect("Pick attributes",
-                                           options=[a["label"] for a in FR_ATTRIBUTES],
-                                           default=[_albl[a] for a in QUICK_CHECK_ATTRS if a in _albl],
-                                           key="cmb_fr_custom")
-                _lbl2id = {a["label"]: a["id"] for a in FR_ATTRIBUTES}
-                _sel_attr = [_lbl2id[l] for l in _picklbls] if _picklbls else [a["id"] for a in FR_ATTRIBUTES]
+                st.dataframe(_disp.style.apply(_cmb_color_rows, axis=1), use_container_width=True,
+                             hide_index=True, height=min(len(_disp) * 38 + 40, 600))
+            _pe1, _pe2 = st.columns(2)
+            _pe1.download_button("⬇️ Catalogue — all (CSV)", dfc[_selcols].rename(columns=_rmap).to_csv(index=False),
+                                 f"combined_catalogue_all_{datetime.date.today().isoformat()}.csv", "text/csv",
+                                 use_container_width=True, key="cmb_pc_dl_all")
+            _pe2.download_button("⬇️ Catalogue — filtered (CSV)", pcf[_selcols].rename(columns=_rmap).to_csv(index=False),
+                                 f"combined_catalogue_filtered_{datetime.date.today().isoformat()}.csv", "text/csv",
+                                 use_container_width=True, key="cmb_pc_dl_filt")
 
-            fr_results = run_fr_check(frdf, _sel_attr)
-            _passed = sum(1 for r in fr_results if r["passed"])
-            _fm = st.columns(3)
-            _fm[0].metric("Listings", len(fr_results))
-            _fm[1].metric("✅ Passed", _passed)
-            _fm[2].metric("⛔ Flagged", len(fr_results) - _passed)
+        elif cmb_view == "🔬 FR check":
+            _albl = {a["id"]: a["label"] for a in FR_ATTRIBUTES}
+            if not isinstance(frdf, pd.DataFrame) or frdf.empty:
+                st.info("No FR data resolved for these listings.")
+            else:
+                _preset = st.radio("Attributes to check", ["Quick Check", "All Attributes", "Custom"], horizontal=True, key="cmb_fr_preset")
+                if _preset == "Quick Check":
+                    _sel_attr = [a for a in QUICK_CHECK_ATTRS if a in _albl]
+                elif _preset == "All Attributes":
+                    _sel_attr = [a["id"] for a in FR_ATTRIBUTES]
+                else:
+                    _lbl2id = {a["label"]: a["id"] for a in FR_ATTRIBUTES}
+                    _picklbls = st.multiselect("Pick attributes", options=[a["label"] for a in FR_ATTRIBUTES], default=[_albl[a] for a in QUICK_CHECK_ATTRS if a in _albl], key="cmb_fr_custom")
+                    _sel_attr = [_lbl2id[l] for l in _picklbls] if _picklbls else [a["id"] for a in FR_ATTRIBUTES]
+                fr_results = run_fr_check(frdf, _sel_attr)
+                with st.expander("🔎 FR filters", expanded=False):
+                    ff = st.columns(4)
+                    _mkts = sorted({(r.get("marketplace") or "") for r in fr_results if r.get("marketplace")})
+                    _vnds = sorted({(r.get("vendor") or "") for r in fr_results if r.get("vendor")})
+                    _failopts = [_albl[a] for a in _sel_attr if next((x for x in FR_ATTRIBUTES if x["id"] == a), {}).get("type") == "check"]
+                    with ff[0]:
+                        _res_sel = st.multiselect("Result", ["Pass", "Flagged"], default=[], key="cmb_fr_f_res", placeholder="All")
+                    with ff[1]:
+                        _mkt_sel = st.multiselect("Marketplace", _mkts, default=[], key="cmb_fr_f_mkt", placeholder="All")
+                    with ff[2]:
+                        _vnd_sel = st.multiselect("Vendor", _vnds, default=[], key="cmb_fr_f_vnd", placeholder="All")
+                    with ff[3]:
+                        _fail_sel = st.multiselect("Failing attribute", _failopts, default=[], key="cmb_fr_f_fail", placeholder="Any")
+                _fid = {a["label"]: a["id"] for a in FR_ATTRIBUTES}
+                def _keep(r):
+                    if _res_sel and not (("Pass" in _res_sel and r["passed"]) or ("Flagged" in _res_sel and not r["passed"])):
+                        return False
+                    if _mkt_sel and (r.get("marketplace") or "") not in _mkt_sel:
+                        return False
+                    if _vnd_sel and (r.get("vendor") or "") not in _vnd_sel:
+                        return False
+                    if _fail_sel:
+                        for lbl in _fail_sel:
+                            if r["details"].get(_fid[lbl], {}).get("status") != "r":
+                                return False
+                    return True
+                fr_results = [r for r in fr_results if _keep(r)]
+                _passed = sum(1 for r in fr_results if r["passed"])
+                _fm = st.columns(3)
+                _fm[0].metric("Listings", len(fr_results))
+                _fm[1].metric("✅ Passed", _passed)
+                _fm[2].metric("⛔ Flagged", len(fr_results) - _passed)
+                _sel_checks = [a for a in _sel_attr if next((x for x in FR_ATTRIBUTES if x["id"] == a), {}).get("type") == "check"]
+                _icons = {"g": "✅", "r": "⛔", "i": "ℹ️", "n": "—"}
+                _sumrows = []
+                for r in fr_results:
+                    row = {"Listing ID": r["listing_id"], "SKU": r["sku"], "Product": (str(r["product_name"])[:40] if r["product_name"] else ""), "Result": "✅ Pass" if r["passed"] else f"⛔ {r['red_count']} issue(s)"}
+                    for aid in _sel_checks:
+                        row[_albl[aid]] = _icons.get(r["details"].get(aid, {}).get("status"), "—")
+                    _sumrows.append(row)
+                _frsum = pd.DataFrame(_sumrows)
+                if _frsum.empty:
+                    st.info("No listings match the FR filters.")
+                else:
+                    def _cmb_fr_color(row):
+                        return (["background-color: rgba(239,68,68,0.08)"] * len(row) if "⛔" in str(row.get("Result", "")) else ["background-color: rgba(34,197,94,0.05)"] * len(row))
+                    st.dataframe(_frsum.style.apply(_cmb_fr_color, axis=1), use_container_width=True, hide_index=True, height=min(len(_frsum) * 36 + 44, 560))
+                    _fe1, _fe2 = st.columns(2)
+                    _fe1.download_button("⬇️ FR — shown (CSV)", _frsum.to_csv(index=False), f"combined_fr_{datetime.date.today().isoformat()}.csv", "text/csv", use_container_width=True, key="cmb_fr_dl_shown")
+                    _fe2.download_button("⬇️ FR — flagged only (CSV)", _frsum[_frsum["Result"].str.startswith("⛔")].to_csv(index=False), f"combined_fr_flagged_{datetime.date.today().isoformat()}.csv", "text/csv", use_container_width=True, key="cmb_fr_dl_flag")
+                    st.markdown("##### 🔍 FR drill-down")
+                    _dopts = ["— Select a listing —"] + [f"{r['listing_id']} • {r['sku'] or '—'}" for r in fr_results]
+                    _dpick = st.selectbox("Listing", _dopts, key="cmb_fr_drill", label_visibility="collapsed")
+                    if _dpick != "— Select a listing —":
+                        _dr = fr_results[_dopts.index(_dpick) - 1]
+                        _sp = _dr.get("suggested_prep")
+                        if _sp:
+                            st.markdown(f"💡 **Suggested Prep:** {_sp['id']} — {_sp['desc']}" + (f" · {_sp['note']}" if _sp.get('note') else ""))
+                        _chk, _inf = [], []
+                        for aid in _sel_attr:
+                            _a = next((x for x in FR_ATTRIBUTES if x["id"] == aid), None)
+                            if not _a:
+                                continue
+                            det = _dr["details"].get(aid, {})
+                            rowd = {"Attribute": _a["label"], "Value": det.get("value", "") or "—", "Status": {"g": "✅ Pass", "r": "⛔ Fail", "i": "ℹ️ Info", "n": "—"}.get(det.get("status"), "—"), "Note": det.get("text", "") or "—"}
+                            (_inf if _a["type"] == "info" else _chk).append(rowd)
+                        if _chk:
+                            st.markdown("**Checks**")
+                            def _dcolor(row):
+                                if "Fail" in str(row.get("Status", "")):
+                                    return ["background-color: rgba(239,68,68,0.10)"] * len(row)
+                                if "Pass" in str(row.get("Status", "")):
+                                    return ["background-color: rgba(34,197,94,0.05)"] * len(row)
+                                return [""] * len(row)
+                            st.dataframe(pd.DataFrame(_chk).style.apply(_dcolor, axis=1), use_container_width=True, hide_index=True)
+                        if _inf:
+                            st.markdown("**Info**")
+                            st.dataframe(pd.DataFrame(_inf), use_container_width=True, hide_index=True)
 
-            _sel_checks = [a for a in _sel_attr if _albl.get(a) and next((x for x in FR_ATTRIBUTES if x["id"] == a), {}).get("type") == "check"]
-            _icons = {"g": "✅", "r": "⛔", "i": "ℹ️", "n": "—"}
-            _sumrows = []
-            for r in fr_results:
-                row = {"Listing ID": r["listing_id"], "SKU": r["sku"],
-                       "Product": (str(r["product_name"])[:40] if r["product_name"] else ""),
-                       "Result": "✅ Pass" if r["passed"] else f"⛔ {r['red_count']} issue(s)"}
-                for aid in _sel_checks:
-                    row[_albl[aid]] = _icons.get(r["details"].get(aid, {}).get("status"), "—")
-                _sumrows.append(row)
-            _frsum = pd.DataFrame(_sumrows)
+        else:
+            st.markdown("#### 📊 Everything in one table — Catalogue + FR per listing")
+            fr_all = run_fr_check(frdf, [a["id"] for a in FR_ATTRIBUTES]) if (isinstance(frdf, pd.DataFrame) and not frdf.empty) else []
+            fr_by = {str(r["listing_id"]).strip().upper(): r for r in fr_all}
+            _pc_cols = [c for c in COLUMN_MAP if c in dfc.columns]
+            _pc_key = [("ASIN", "ASIN"), ("MPN", "MPN"), ("WHOLESALE_PRICE", "Wholesale Price"), ("SHIPPABLE_TAG", "Shippable"), ("MARKETPLACE_SELLER", "Seller")]
+            def _sval(v):
+                if v is None:
+                    return ""
+                s = str(v).strip()
+                return "" if s.lower() == "nan" else s
+            recs = []
+            for _, prow in dfc.iterrows():
+                lid = _sval(prow.get("LISTING_ID"))
+                if not lid:
+                    continue
+                frr = fr_by.get(lid.upper())
+                rec = {}
+                for c in _pc_cols:
+                    rec[COLUMN_MAP[c]["label"]] = _sval(prow.get(c))
+                fr_fails = []
+                for a in FR_ATTRIBUTES:
+                    det = frr["details"].get(a["id"], {}) if frr else {}
+                    stt = det.get("status")
+                    if a["type"] == "check":
+                        rec["FR · " + a["label"]] = {"g": "✅", "r": "⛔", "i": "ℹ️", "n": "—"}.get(stt, "—" if frr else "n/a")
+                        if stt == "r":
+                            fr_fails.append(a["label"])
+                    else:
+                        rec["FR · " + a["label"]] = (det.get("value", "") or "—") if frr else "n/a"
+                pc_missing = [lbl for col, lbl in _pc_key if col in dfc.columns and not _sval(prow.get(col))]
+                flags = []
+                if fr_fails:
+                    flags.append("FR: " + ", ".join(fr_fails))
+                if pc_missing:
+                    flags.append("Missing: " + ", ".join(pc_missing))
+                if frr:
+                    rec["FR Result"] = "✅ Pass" if frr["passed"] else "⛔ Flagged"
+                    rec["FR Issues"] = frr["red_count"]
+                else:
+                    rec["FR Result"] = "n/a"
+                    rec["FR Issues"] = ""
+                rec["Flags"] = " · ".join(flags) if flags else "✅ none"
+                recs.append(rec)
+            full = pd.DataFrame(recs)
+            only_flagged = False
+            with st.expander("🔎 Filters", expanded=False):
+                fcol = st.columns(4)
+                with fcol[0]:
+                    if "Marketplace" in full.columns:
+                        full = multiselect_filter(full, "Marketplace", "Marketplace", "cmb_all_mp")
+                with fcol[1]:
+                    if "Vendor" in full.columns:
+                        full = multiselect_filter(full, "Vendor", "Vendor", "cmb_all_vn")
+                with fcol[2]:
+                    if "FR Result" in full.columns:
+                        full = multiselect_filter(full, "FR Result", "FR Result", "cmb_all_fr")
+                with fcol[3]:
+                    only_flagged = st.checkbox("Only flagged listings", key="cmb_all_flag")
+            if only_flagged and "Flags" in full.columns:
+                full = full[full["Flags"] != "✅ none"]
+            _nf = int((full["Flags"] != "✅ none").sum()) if "Flags" in full.columns else 0
+            mm = st.columns(3)
+            mm[0].metric("Listings", len(full))
+            mm[1].metric("Flagged", _nf)
+            mm[2].metric("Clean", len(full) - _nf)
+            all_cols = list(full.columns)
+            _prio = ["Listing ID", "SKU", "ASIN", "Master ID", "MPN", "FNSKU", "Product Name", "Marketplace", "Marketplace Seller", "Vendor", "Fulfillment Type", "DNO", "Shippable", "FR Result", "FR Issues", "Flags"]
+            _defc = [c for c in _prio if c in all_cols]
+            show_all = st.checkbox("Show all columns (every catalogue field + all FR attributes)", key="cmb_all_showall")
+            if show_all:
+                _selc = all_cols
+            else:
+                _selc = st.multiselect("Columns to show", options=all_cols, default=_defc, key="cmb_all_cols")
+                if not _selc:
+                    _selc = _defc
+            _selc = [c for c in all_cols if c in set(_selc)]
+            _dispf = full[_selc]
+            def _acolor(r):
+                return (["background-color: rgba(239,68,68,0.08)"] * len(r) if r.get("Flags") != "✅ none" else [""] * len(r))
+            _hh = min(680, 90 + 34 * max(len(_dispf), 1))
+            if "Flags" in _selc:
+                st.dataframe(_dispf.style.apply(_acolor, axis=1), use_container_width=True, hide_index=True, height=_hh)
+            else:
+                st.dataframe(_dispf, use_container_width=True, hide_index=True, height=_hh)
+            _ae1, _ae2 = st.columns(2)
+            _ae1.download_button("⬇️ Shown columns (CSV)", _dispf.to_csv(index=False), f"combined_all_shown_{datetime.date.today().isoformat()}.csv", "text/csv", use_container_width=True, key="cmb_all_dl_shown")
+            _ae2.download_button("⬇️ Everything (CSV)", full.to_csv(index=False), f"combined_all_full_{datetime.date.today().isoformat()}.csv", "text/csv", use_container_width=True, key="cmb_all_dl_full")
 
-            def _cmb_fr_color(row):
-                return (["background-color: rgba(239,68,68,0.08)"] * len(row)
-                        if "⛔" in str(row.get("Result", "")) else ["background-color: rgba(34,197,94,0.05)"] * len(row))
-
-            st.dataframe(_frsum.style.apply(_cmb_fr_color, axis=1), use_container_width=True,
-                         hide_index=True, height=min(len(_frsum) * 36 + 44, 560))
-
-            _fe1, _fe2 = st.columns(2)
-            _fe1.download_button("⬇️ FR — passed (CSV)",
-                                 _frsum[_frsum["Result"].str.startswith("✅")].to_csv(index=False),
-                                 f"combined_fr_passed_{datetime.date.today().isoformat()}.csv", "text/csv",
-                                 use_container_width=True, key="cmb_fr_dl_pass")
-            _fe2.download_button("⬇️ FR — flagged (CSV)",
-                                 _frsum[_frsum["Result"].str.startswith("⛔")].to_csv(index=False),
-                                 f"combined_fr_flagged_{datetime.date.today().isoformat()}.csv", "text/csv",
-                                 use_container_width=True, key="cmb_fr_dl_flag")
-
-            st.markdown("##### 🔍 FR drill-down")
-            _dopts = ["— Select a listing —"] + [f"{r['listing_id']} • {r['sku'] or '—'}" for r in fr_results]
-            _dpick = st.selectbox("Listing", _dopts, key="cmb_fr_drill", label_visibility="collapsed")
-            if _dpick != "— Select a listing —":
-                _dr = fr_results[_dopts.index(_dpick) - 1]
-                _status_color = "rgba(34,197,94,0.15)" if _dr["passed"] else "rgba(239,68,68,0.15)"
-                _status_txt = "✅ PASSED — all checks succeeded" if _dr["passed"] else f"⛔ FLAGGED — {_dr['red_count']} issue(s)"
-                st.markdown(
-                    f'<div style="background:{_status_color};border-radius:8px;padding:12px 16px;margin-bottom:10px;">'
-                    f'<div style="font-size:13px;font-weight:600;">{_dr["product_name"] or "(no name)"}</div>'
-                    f'<div style="font-size:11px;font-family:monospace;color:#94a3b8;">{_dr["listing_id"]} • {_dr["sku"] or "—"} • {_dr.get("marketplace","") or "—"}</div>'
-                    f'<div style="font-size:13px;font-weight:600;margin-top:6px;">{_status_txt}</div></div>',
-                    unsafe_allow_html=True)
-                _sp = _dr.get("suggested_prep")
-                if _sp:
-                    st.markdown(f"💡 **Suggested Prep:** {_sp['id']} — {_sp['desc']}" + (f" · {_sp['note']}" if _sp.get('note') else ""))
-                _chk, _inf = [], []
-                for aid in _sel_attr:
-                    _a = next((x for x in FR_ATTRIBUTES if x["id"] == aid), None)
-                    if not _a:
-                        continue
-                    det = _dr["details"].get(aid, {})
-                    rowd = {"Attribute": _a["label"], "Value": det.get("value", "") or "—",
-                            "Status": {"g": "✅ Pass", "r": "⛔ Fail", "i": "ℹ️ Info", "n": "—"}.get(det.get("status"), "—"),
-                            "Note": det.get("text", "") or "—"}
-                    (_inf if _a["type"] == "info" else _chk).append(rowd)
-                if _chk:
-                    st.markdown("**Checks**")
-                    _chkdf = pd.DataFrame(_chk)
-                    def _dcolor(row):
-                        if "Fail" in str(row.get("Status", "")):
-                            return ["background-color: rgba(239,68,68,0.10)"] * len(row)
-                        if "Pass" in str(row.get("Status", "")):
-                            return ["background-color: rgba(34,197,94,0.05)"] * len(row)
-                        return [""] * len(row)
-                    st.dataframe(_chkdf.style.apply(_dcolor, axis=1), use_container_width=True, hide_index=True)
-                if _inf:
-                    st.markdown("**Info**")
-                    st.dataframe(pd.DataFrame(_inf), use_container_width=True, hide_index=True)
     elif isinstance(dfc, pd.DataFrame):
         st.info("No listings found for those IDs.")
 
