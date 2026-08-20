@@ -2193,7 +2193,7 @@ with combined_tab:
                     return ["background-color: rgba(34,197,94,0.05)"] * n
                 return [""] * n
 
-            if len(_disp) > 5000:
+            if len(_disp) * max(len(_disp.columns), 1) > 150000:
                 st.dataframe(_disp, use_container_width=True, hide_index=True, height=600)
             else:
                 st.dataframe(_disp.style.apply(_cmb_color_rows, axis=1), use_container_width=True,
@@ -2267,7 +2267,11 @@ with combined_tab:
                 else:
                     def _cmb_fr_color(row):
                         return (["background-color: rgba(239,68,68,0.08)"] * len(row) if "⛔" in str(row.get("Result", "")) else ["background-color: rgba(34,197,94,0.05)"] * len(row))
-                    st.dataframe(_frsum.style.apply(_cmb_fr_color, axis=1), use_container_width=True, hide_index=True, height=min(len(_frsum) * 36 + 44, 560))
+                    _frh = min(len(_frsum) * 36 + 44, 560)
+                    if len(_frsum) * max(len(_frsum.columns), 1) <= 150000:
+                        st.dataframe(_frsum.style.apply(_cmb_fr_color, axis=1), use_container_width=True, hide_index=True, height=_frh)
+                    else:
+                        st.dataframe(_frsum, use_container_width=True, hide_index=True, height=_frh)
                     _fe1, _fe2 = st.columns(2)
                     _fe1.download_button("⬇️ FR — shown (CSV)", _frsum.to_csv(index=False), f"combined_fr_{datetime.date.today().isoformat()}.csv", "text/csv", use_container_width=True, key="cmb_fr_dl_shown")
                     _fe2.download_button("⬇️ FR — flagged only (CSV)", _frsum[_frsum["Result"].str.startswith("⛔")].to_csv(index=False), f"combined_fr_flagged_{datetime.date.today().isoformat()}.csv", "text/csv", use_container_width=True, key="cmb_fr_dl_flag")
@@ -2381,9 +2385,13 @@ with combined_tab:
             def _acolor(r):
                 return (["background-color: rgba(239,68,68,0.08)"] * len(r) if r.get("Flags") != "✅ none" else [""] * len(r))
             _hh = min(680, 90 + 34 * max(len(_dispf), 1))
-            if "Flags" in _selc:
+            # Row-coloring uses a pandas Styler, which caps at ~262k cells. For big
+            # result sets (e.g. a whole brand) skip coloring and show the plain table.
+            if "Flags" in _selc and (len(_dispf) * max(len(_dispf.columns), 1)) <= 150000:
                 st.dataframe(_dispf.style.apply(_acolor, axis=1), use_container_width=True, hide_index=True, height=_hh)
             else:
+                if len(_dispf) * max(len(_dispf.columns), 1) > 150000:
+                    st.caption("ℹ️ Large result set — row highlighting is off for speed. Use filters to narrow down for colored flags.")
                 st.dataframe(_dispf, use_container_width=True, hide_index=True, height=_hh)
             _ae1, _ae2 = st.columns(2)
             _ae1.download_button("⬇️ Shown columns (CSV)", _dispf.to_csv(index=False), f"combined_all_shown_{datetime.date.today().isoformat()}.csv", "text/csv", use_container_width=True, key="cmb_all_dl_shown")
