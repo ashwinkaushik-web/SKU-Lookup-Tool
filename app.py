@@ -2003,46 +2003,102 @@ with combined_tab:
     st.markdown("")
     st.markdown("### 🔗 Combined — Catalogue + FR in one view")
     st.caption(
-        "Paste ANY identifier — SKU, Listing ID, ASIN, Master ID, MPN, FNSKU, UPC or EAN. "
-        "Every matching listing is resolved, then shown with the full Catalogue view AND the "
-        "full FR check below. (e.g. one Part Number that maps to 20 listings checks all 20.)"
+        "Look up by pasting IDs, or pick a brand to pull all of its listings. Each listing shows "
+        "the full Catalogue view AND the full FR check, and you can filter down from there."
     )
     st.markdown("")
 
-    cmb_text = st.text_area(
-        "Enter IDs",
-        placeholder="One per line, or comma / space separated — any ID type\ne.g.\n12345\nUK-HD-699391\nB0BXT6YCHK\nP0M3SJXI",
-        height=140, key="cmb_text", label_visibility="collapsed",
-    )
-    cmb_ids = []
-    if cmb_text.strip():
-        cmb_ids = [s.strip() for s in re.split(r"[\n,\s\t]+", cmb_text.strip()) if s.strip()]
-        _seen = set()
-        cmb_ids = [x for x in cmb_ids if not (x in _seen or _seen.add(x))]
-    st.caption(f"**{len(cmb_ids)}** ID(s) entered • Max 200")
-    if len(cmb_ids) > 200:
-        st.warning("⚠️ Max 200 IDs. Only the first 200 will be processed.")
-        cmb_ids = cmb_ids[:200]
+    if "cmb_input_mode" not in st.session_state:
+        st.session_state["cmb_input_mode"] = "ids"
+    _im1, _im2, _ = st.columns([1, 1, 4])
+    with _im1:
+        if st.button("🔎 By ID", type="primary" if st.session_state["cmb_input_mode"] == "ids" else "secondary",
+                     use_container_width=True, key="cmb_mode_ids"):
+            st.session_state["cmb_input_mode"] = "ids"
+            st.rerun()
+    with _im2:
+        if st.button("🏷️ By Brand", type="primary" if st.session_state["cmb_input_mode"] == "brand" else "secondary",
+                     use_container_width=True, key="cmb_mode_brand"):
+            st.session_state["cmb_input_mode"] = "brand"
+            st.rerun()
+    st.markdown("")
 
-    if cmb_ids and st.button(f"🔗 Look up {len(cmb_ids)} ID(s)", type="primary",
-                             use_container_width=True, key="cmb_run"):
-        with st.spinner("Resolving IDs → listings, then running catalogue + FR check…"):
+    if st.session_state["cmb_input_mode"] == "ids":
+        cmb_text = st.text_area(
+            "Enter IDs",
+            placeholder="One per line, or comma / space separated — any ID type\ne.g.\n12345\nUK-HD-699391\nB0BXT6YCHK\nP0M3SJXI",
+            height=140, key="cmb_text", label_visibility="collapsed",
+        )
+        cmb_ids = []
+        if cmb_text.strip():
+            cmb_ids = [s.strip() for s in re.split(r"[\n,\s\t]+", cmb_text.strip()) if s.strip()]
+            _seen = set()
+            cmb_ids = [x for x in cmb_ids if not (x in _seen or _seen.add(x))]
+        st.caption(f"**{len(cmb_ids)}** ID(s) entered • Max 200")
+        if len(cmb_ids) > 200:
+            st.warning("⚠️ Max 200 IDs. Only the first 200 will be processed.")
+            cmb_ids = cmb_ids[:200]
+        if cmb_ids and st.button(f"🔗 Look up {len(cmb_ids)} ID(s)", type="primary",
+                                 use_container_width=True, key="cmb_run"):
+            with st.spinner("Resolving IDs → listings, then running catalogue + FR check…"):
+                try:
+                    _dfc = run_lookup(cmb_ids)
+                except Exception as e:
+                    _dfc = pd.DataFrame()
+                    st.error(f"Catalogue lookup failed: {e}")
+                _frdf = pd.DataFrame()
+                if isinstance(_dfc, pd.DataFrame) and not _dfc.empty and "LISTING_ID" in _dfc.columns:
+                    _lids = sorted({str(x).strip() for x in _dfc["LISTING_ID"].dropna().tolist() if str(x).strip()})[:500]
+                    if _lids:
+                        try:
+                            _frdf = run_fr_lookup(_lids, "LISTING_ID")
+                        except Exception as e:
+                            st.error(f"FR check failed: {e}")
+                st.session_state["cmb_cat"] = _dfc
+                st.session_state["cmb_frdf"] = _frdf
+    else:
+        # ── By Brand: pull every listing for a brand, with full PC + FR ──
+        _bc1, _bc2, _bc3 = st.columns(3)
+        with _bc1:
             try:
-                _dfc = run_lookup(cmb_ids)
-            except Exception as e:
-                _dfc = pd.DataFrame()
-                st.error(f"Catalogue lookup failed: {e}")
-            _frdf = pd.DataFrame()
-            if isinstance(_dfc, pd.DataFrame) and not _dfc.empty and "LISTING_ID" in _dfc.columns:
-                _lids = sorted({str(x).strip() for x in _dfc["LISTING_ID"].dropna().tolist() if str(x).strip()})
-                _lids = _lids[:500]
-                if _lids:
-                    try:
-                        _frdf = run_fr_lookup(_lids, "LISTING_ID")
-                    except Exception as e:
-                        st.error(f"FR check failed: {e}")
-            st.session_state["cmb_cat"] = _dfc
-            st.session_state["cmb_frdf"] = _frdf
+                _vlist = get_vendor_list()
+            except Exception:
+                _vlist = []
+            cmb_brand = st.selectbox("Brand / Vendor", options=[""] + _vlist,
+                                     key="cmb_brand", placeholder="Start typing to search...")
+        with _bc2:
+            cmb_brand_region = st.selectbox("Region", REGION_OPTIONS, key="cmb_brand_region")
+        with _bc3:
+            cmb_brand_limit = st.selectbox("Max listings", ["500", "1000", "2000", "5000", "No limit"],
+                                           key="cmb_brand_limit")
+        if cmb_brand and st.button(f"🏷️ Fetch all listings for {cmb_brand}", type="primary",
+                                   use_container_width=True, key="cmb_brand_run"):
+            _region_mps, _exclude_mapped = None, False
+            if cmb_brand_region == "Other":
+                _exclude_mapped = True
+            elif cmb_brand_region != "All":
+                _region_mps = REGION_MAP.get(cmb_brand_region, [])
+            _limit_val = None if cmb_brand_limit == "No limit" else int(cmb_brand_limit)
+            with st.spinner(f"Fetching {cmb_brand} listings + FR check…"):
+                try:
+                    _dfc = run_brand_lookup(cmb_brand, _region_mps, _limit_val)
+                    if _exclude_mapped and not _dfc.empty:
+                        _mapped = set().union(*REGION_MAP.values())
+                        _dfc = _dfc[~_dfc["MARKETPLACE"].isin(_mapped)]
+                except Exception as e:
+                    _dfc = pd.DataFrame()
+                    st.error(f"Brand lookup failed: {e}")
+                _frdf = pd.DataFrame()
+                if isinstance(_dfc, pd.DataFrame) and not _dfc.empty and "LISTING_ID" in _dfc.columns:
+                    _lids = sorted({str(x).strip() for x in _dfc["LISTING_ID"].dropna().tolist() if str(x).strip()})[:2000]
+                    for _i in range(0, len(_lids), 400):
+                        try:
+                            _part = run_fr_lookup(_lids[_i:_i + 400], "LISTING_ID")
+                            _frdf = _part if _frdf.empty else pd.concat([_frdf, _part], ignore_index=True)
+                        except Exception as e:
+                            st.error(f"FR check failed: {e}")
+                st.session_state["cmb_cat"] = _dfc
+                st.session_state["cmb_frdf"] = _frdf
 
     dfc = st.session_state.get("cmb_cat")
     frdf = st.session_state.get("cmb_frdf")
