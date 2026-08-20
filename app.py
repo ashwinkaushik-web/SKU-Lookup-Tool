@@ -2388,14 +2388,22 @@ with combined_tab:
             _ae1, _ae2 = st.columns(2)
             _ae1.download_button("⬇️ Shown columns (CSV)", _dispf.to_csv(index=False), f"combined_all_shown_{datetime.date.today().isoformat()}.csv", "text/csv", use_container_width=True, key="cmb_all_dl_shown")
             _ae2.download_button("⬇️ Everything (CSV)", full.to_csv(index=False), f"combined_all_full_{datetime.date.today().isoformat()}.csv", "text/csv", use_container_width=True, key="cmb_all_dl_full")
-            if st.button("⬆️ Send to Google Sheet (new dated tab)", use_container_width=True, key="cmb_all_gsheet"):
+            # Tab name: "{Brand} {date}" in Brand mode, else just the date.
+            _today_iso = datetime.date.today().isoformat()
+            if st.session_state.get("cmb_input_mode") == "brand" and st.session_state.get("cmb_brand"):
+                _tab_raw = f"{st.session_state['cmb_brand']} {_today_iso}"
+            else:
+                _tab_raw = _today_iso
+            _tab_name = re.sub(r'[:\\/?*\[\]]', "-", _tab_raw)[:99]  # strip chars Sheets rejects
+            if st.button(f"⬆️ Send to Google Sheet — tab \"{_tab_name}\"", use_container_width=True, key="cmb_all_gsheet"):
                 with st.spinner("Sending to Google Sheet…"):
-                    _ok, _msg = send_to_google_sheet(full)
+                    _ok, _msg = send_to_google_sheet(full, tab_name=_tab_name)
                 if _ok:
-                    st.success(f"✅ Sent {len(full)} rows to a new dated tab in the Google Sheet.")
+                    st.success(f"✅ Sent {len(full)} rows to tab \"{_tab_name}\" in the Google Sheet.")
                 else:
                     st.error(f"Couldn't send: {_msg}")
-                st.caption("Needs WEBHOOK_URL and WEBHOOK_TOKEN in the app's Streamlit secrets (same values as the repo).")
+                st.caption("Needs WEBHOOK_URL and WEBHOOK_TOKEN in the app's Streamlit secrets. "
+                           "Sending again the same day adds a \"(2)\" tab — it never overwrites.")
 
     elif isinstance(dfc, pd.DataFrame):
         st.info("No listings found for those IDs.")
