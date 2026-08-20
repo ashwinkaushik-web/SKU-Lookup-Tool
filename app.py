@@ -9,6 +9,7 @@ import datetime
 import time
 import io
 import re
+import json
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 
@@ -1305,6 +1306,38 @@ def find_missing_items(skus, df):
     return [s for s in skus if s.upper() not in found]
 
 
+def send_to_google_sheet(df, tab_name=None):
+    """POST a DataFrame to the Apps Script web app (same webhook the weekly job
+    uses) — writes a new dated tab in the bound Google Sheet. The app already
+    reaches Snowflake, so this works even though GitHub Actions can't.
+    Reads WEBHOOK_URL / WEBHOOK_TOKEN from Streamlit secrets.
+    Returns (ok: bool, message: str)."""
+    import urllib.request
+    try:
+        url = st.secrets.get("WEBHOOK_URL")
+        token = st.secrets.get("WEBHOOK_TOKEN", "")
+    except Exception:
+        url, token = None, ""
+    if not url:
+        return False, "WEBHOOK_URL / WEBHOOK_TOKEN not set in the app's Streamlit secrets."
+    payload = {
+        "token": token,
+        "tab": tab_name or datetime.date.today().isoformat(),
+        "columns": df.columns.tolist(),
+        "rows": df.astype(str).values.tolist(),
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            body = resp.read().decode("utf-8", "replace")
+        return ("OK" in body), body[:300]
+    except Exception as e:
+        return False, str(e)
+
+
 # ══════════════════════════════════════════════
 # Sidebar
 # ══════════════════════════════════════════════
@@ -2299,6 +2332,14 @@ with combined_tab:
             _ae1, _ae2 = st.columns(2)
             _ae1.download_button("⬇️ Shown columns (CSV)", _dispf.to_csv(index=False), f"combined_all_shown_{datetime.date.today().isoformat()}.csv", "text/csv", use_container_width=True, key="cmb_all_dl_shown")
             _ae2.download_button("⬇️ Everything (CSV)", full.to_csv(index=False), f"combined_all_full_{datetime.date.today().isoformat()}.csv", "text/csv", use_container_width=True, key="cmb_all_dl_full")
+            if st.button("⬆️ Send to Google Sheet (new dated tab)", use_container_width=True, key="cmb_all_gsheet"):
+                with st.spinner("Sending to Google Sheet…"):
+                    _ok, _msg = send_to_google_sheet(full)
+                if _ok:
+                    st.success(f"✅ Sent {len(full)} rows to a new dated tab in the Google Sheet.")
+                else:
+                    st.error(f"Couldn't send: {_msg}")
+                st.caption("Needs WEBHOOK_URL and WEBHOOK_TOKEN in the app's Streamlit secrets (same values as the repo).")
 
     elif isinstance(dfc, pd.DataFrame):
         st.info("No listings found for those IDs.")
